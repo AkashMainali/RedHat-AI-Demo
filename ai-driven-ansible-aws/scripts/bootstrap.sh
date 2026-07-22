@@ -26,19 +26,24 @@ AWS_REGION_ARG="${AWS_REGION:-us-east-1}"
 AWS_PROFILE_ARG="${AWS_PROFILE:-}"
 SSH_KEY_PATH="${SSH_KEY_PATH:-${HOME}/.ssh/aiops_ansible_demo}"
 INGRESS_CIDR="${INGRESS_CIDR:-}"
-AUTO_APPROVE=0
+AUTO_APPROVE=1  # Default: yes (Terraform is idempotent, safe to auto-approve)
 SKIP_ANSIBLE=0
+INFRA_ONLY=0
 
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [options]
 
+SAFE & IDEMPOTENT: Running this script multiple times will NOT create duplicate servers.
+Terraform detects existing resources and skips recreation.
+
   --profile NAME        AWS SSO/CLI profile to use (else default chain / AWS_PROFILE)
   --region NAME         AWS region (default: ${AWS_REGION_ARG})
   --ingress-cidr CIDR   Restrict access to this CIDR (default: auto-detected /32)
   --ssh-key PATH        SSH private key path to use/create (default: ${SSH_KEY_PATH})
-  --auto-approve        Do not prompt for Terraform apply confirmation
+  --auto-approve        Do not prompt for Terraform apply confirmation (default: yes)
   --skip-ansible        Provision infrastructure only (no secret prompts, no config)
+  --infra-only          Check: infrastructure exists? Run Ansible only (skip TF)
   -h, --help            Show this help
 EOF
 }
@@ -51,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --ssh-key)      SSH_KEY_PATH="$2"; shift 2 ;;
     --auto-approve) AUTO_APPROVE=1; shift ;;
     --skip-ansible) SKIP_ANSIBLE=1; shift ;;
+    --infra-only)   INFRA_ONLY=1; shift ;;
     -h|--help)      usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
@@ -112,21 +118,40 @@ else
   warn "--skip-ansible set: skipping secret collection and demo configuration."
 fi
 
-# --- 6. Terraform (NON-secret vars only) ------------------------------------
-export TF_VAR_aws_region="${AWS_REGION}"
-[[ -n "${AWS_PROFILE:-}" ]] && export TF_VAR_aws_profile="${AWS_PROFILE}"
-export TF_VAR_allowed_ingress_cidrs="[\"${INGRESS_CIDR}\"]"
-export TF_VAR_ssh_public_key="${SSH_PUB}"
+# --- 6. Check if infrastructure already exists (idempotency guard) -----------
+infra_exists=0
+if [[ -f "${TF_DIR}/terraform.tfstate" ]]; then
+  if terraform -chdir="${TF_DIR}" state list 2>/dev/null | grep -q aws_instance.control; then
+    log "Infrastructure already exists (detected from terraform.tfstate)"
+    infra_exists=1
+  fi
+fi
 
-log "terraform init"
-terraform -chdir="${TF_DIR}" init -input=false
+if [[ "${infra_exists}" -eq 1 ]] && [[ "${SKIP_ANSIBLE}" -eq 0 ]]; then
+  log "IDEMPOTENCY: Skipping terraform apply (infrastructure exists). Running Ansible only."
+  INFRA_ONLY=1
+fi
 
-log "terraform apply"
-apply_args=(-input=false)
-[[ "${AUTO_APPROVE}" -eq 1 ]] && apply_args+=(-auto-approve)
-terraform -chdir="${TF_DIR}" apply "${apply_args[@]}"
+# --- 7. Terraform (NON-secret vars only, skipped if infra exists) ------
+if [[ "${INFRA_ONLY}" -eq 0 ]]; then
+  export TF_VAR_aws_region="${AWS_REGION}"
+  [[ -n "${AWS_PROFILE:-}" ]] && export TF_VAR_aws_profile="${AWS_PROFILE}"
+  export TF_VAR_allowed_ingress_cidrs="[\"${INGRESS_CIDR}\"]"
+  export TF_VAR_ssh_public_key="${SSH_PUB}"
 
-# --- 7. read outputs --------------------------------------------------------
+  log "terraform init"
+  terraform -chdir="${TF_DIR}" init -input=false
+
+  log "terraform apply (IDEMPOTENT: no changes = no action; new = create)"
+  apply_args=(-input=false -auto-approve)
+  terraform -chdir="${TF_DIR}" apply "${apply_args[@]}"
+else
+  log "Skipping terraform (infrastructure already exists)"
+  export TF_VAR_aws_region="${AWS_REGION}"
+  [[ -n "${AWS_PROFILE:-}" ]] && export TF_VAR_aws_profile="${AWS_PROFILE}"
+fi
+
+# --- 8. read outputs --------------------------------------------------------
 CONTROL_PUBLIC_IP="$(terraform -chdir="${TF_DIR}" output -raw control_public_ip)"
 CONTROL_PRIVATE_IP="$(terraform -chdir="${TF_DIR}" output -raw control_private_ip)"
 TARGET_PUBLIC_IP="$(terraform -chdir="${TF_DIR}" output -raw target_public_ip)"
@@ -138,37 +163,37 @@ if [[ "${SKIP_ANSIBLE}" -eq 1 ]]; then
   exit 0
 fi
 
-# --- 8. render the Ansible inventory (non-secret) ---------------------------
+# --- 9. render the Ansible inventory (non-secret) ---------------------------
 export CONTROL_PUBLIC_IP CONTROL_PRIVATE_IP TARGET_PUBLIC_IP SSH_USER SSH_KEY_PATH
 envsubst '${CONTROL_PUBLIC_IP} ${CONTROL_PRIVATE_IP} ${TARGET_PUBLIC_IP} ${SSH_USER} ${SSH_KEY_PATH}' \
   < "${ANSIBLE_DIR}/inventory.ini.tmpl" > "${ANSIBLE_DIR}/inventory.ini"
 log "Wrote ${ANSIBLE_DIR}/inventory.ini"
 
-# --- 9. wait for SSH on both nodes ------------------------------------------
+# --- 10. wait for SSH on both nodes ------------------------------------------
 wait_for_ssh() {
   local host="$1" tries=60
   log "Waiting for SSH on ${host}..."
-  until ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+  mkdir -p "${ANSIBLE_DIR}"
+  until ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile="${ANSIBLE_DIR}/.known_hosts" \
-            -o ConnectTimeout=10 -i "${SSH_KEY_PATH}" \
-            "${SSH_USER}@${host}" 'true' >/dev/null 2>&1; do
+            -i "${SSH_KEY_PATH}" "${SSH_USER}@${host}" 'true' >/dev/null 2>&1; do
     tries=$((tries - 1))
-    [[ "${tries}" -gt 0 ]] || die "SSH to ${host} did not become ready."
+    [[ "${tries}" -gt 0 ]] || die "SSH to ${host} did not become ready (tried 60 times, 600 sec total)."
     sleep 10
   done
 }
 wait_for_ssh "${CONTROL_PUBLIC_IP}"
 wait_for_ssh "${TARGET_PUBLIC_IP}"
 
-# --- 10. install required Galaxy collections --------------------------------
+# --- 11. install required Galaxy collections --------------------------------
 log "Installing Ansible collections"
 ansible-galaxy collection install -r "${ANSIBLE_DIR}/requirements.yml"
 
-# --- 11. configure everything (secrets stay in env; read via lookups) -------
+# --- 12. configure everything (secrets stay in env; read via lookups) -------
 log "Running site.yml (this includes the AAP containerized install and can take 20-40+ min)"
 ( cd "${ANSIBLE_DIR}" && ansible-playbook -i inventory.ini site.yml )
 
-# --- 12. summary (no secrets) -----------------------------------------------
+# --- 13. summary (no secrets) -----------------------------------------------
 cat <<EOF
 
 $(printf '\033[1;32mDONE\033[0m')  Environment is up.

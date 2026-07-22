@@ -12,7 +12,6 @@ ContainerName=gitea
 Network=aiops
 PublishPort={{ gitea_http_port }}:3000
 Volume=/opt/gitea/data:/data:Z
-User=1000:1000
 Environment=USER_UID=1000
 Environment=USER_GID=1000
 Environment=GITEA__server__HTTP_PORT=3000

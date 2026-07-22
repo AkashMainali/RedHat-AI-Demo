@@ -49,7 +49,7 @@ resource "aws_instance" "control" {
   }
 
   tags = {
-    Name = "${local.name_prefix}-control"
+    Name = "${var.project_name}-aap-control (AAP, EDA, Kafka, Gitea, Mattermost)"
     Role = "control"
   }
 }
@@ -78,7 +78,7 @@ resource "aws_instance" "target" {
   }
 
   tags = {
-    Name = "${local.name_prefix}-target"
+    Name = "${var.project_name}-httpd-target (web server + Filebeat)"
     Role = "target"
   }
 }

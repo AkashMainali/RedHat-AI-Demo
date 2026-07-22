@@ -41,19 +41,22 @@
   delay: 5
   until: gitea_up is succeeded
 
-- name: Create the Gitea admin user (idempotent)
-  ansible.builtin.command: >-
-    podman exec -u 0 gitea gitea admin user create
-    --username {{ gitea_admin_user }}
-    --password {{ gitea_admin_password }}
-    --email {{ gitea_admin_email }}
-    --admin --must-change-password=false
+- name: Create the Gitea admin user (CLI, as gitea user)
+  ansible.builtin.shell: |
+    podman exec -u 1000 gitea gitea admin user create \
+      --username {{ gitea_admin_user }} \
+      --password {{ gitea_admin_password }} \
+      --email {{ gitea_admin_email }} \
+      --admin --must-change-password=false
   register: gitea_admin
   changed_when: "'successfully created' in gitea_admin.stdout"
   failed_when:
     - gitea_admin.rc != 0
-    - "'already exists' not in (gitea_admin.stderr | default(''))"
- 
+    - "'already exists' not in gitea_admin.stdout"
+  no_log: true
+  retries: 5
+  delay: 3
+  until: gitea_admin.rc == 0 or 'already exists' in gitea_admin.stdout
 
 - name: Create the remediation repository (idempotent)
   ansible.builtin.uri:
