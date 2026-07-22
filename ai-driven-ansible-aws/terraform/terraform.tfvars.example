@@ -1,0 +1,28 @@
+# -----------------------------------------------------------------------------
+# Example non-secret variables.
+#
+# You normally DO NOT need this file: the bootstrap script sets everything via
+# TF_VAR_* environment variables. Copy to terraform.tfvars only if you want to
+# run Terraform by hand.
+#
+# THIS FILE MUST CONTAIN NO SECRETS.
+# Never put AWS keys, Red Hat credentials, tokens, or passwords here.
+# terraform.tfvars is git-ignored to prevent accidental commits.
+# -----------------------------------------------------------------------------
+
+aws_region = "us-east-1"
+# aws_profile = "my-sso-profile"
+
+# Scope tightly to your workstation's public IP. NEVER 0.0.0.0/0.
+# The bootstrap script auto-detects this via checkip.amazonaws.com.
+allowed_ingress_cidrs = ["203.0.113.10/32"]
+
+# ssh_public_key is injected by the bootstrap script (TF_VAR_ssh_public_key).
+# Only needed here if running Terraform by hand - paste your PUBLIC key:
+# ssh_public_key = "ssh-ed25519 AAAAC3Nza... you@workstation"
+
+# Optional sizing overrides:
+# control_instance_type  = "m6i.2xlarge"
+# target_instance_type   = "t3.medium"
+# control_root_volume_gb = 100
+# target_root_volume_gb  = 30

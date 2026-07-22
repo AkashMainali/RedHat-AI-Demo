@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# HOOKS ONLY - disabled by default (demo_content_enabled: false).
+#
+# The upstream demo content - the specific AAP job templates, workflows, EDA
+# rulebooks, and the exact AI prompts - is proprietary to the Red Hat Demo
+# Platform and is not publicly published. This role provides the wiring point
+# and verifies AAP is up; you supply the content. See README.md in this role.
+# =============================================================================
+- name: Demo content wiring
+  when: demo_content_enabled | bool
+  block:
+    - name: Wait for the AAP API to be reachable
+      ansible.builtin.uri:
+        url: "https://{{ control_public_ip }}/api/gateway/v1/ping/"
+        method: GET
+        validate_certs: false
+        status_code: [200]
+      register: aap_api
+      retries: 60
+      delay: 10
+      until: aap_api is succeeded
+
+    # -----------------------------------------------------------------------
+    # Implement below using the AAP configuration collections
+    # (ansible.controller / ansible.eda, or infra.aap_configuration). Create:
+    #   - organization, inventory, and the target host
+    #   - a machine credential (SSH key to the target)
+    #   - credentials for Gitea, Ansible Lightspeed (lightspeed_api_key), and
+    #     the Red Hat AI endpoint (ai_model_endpoint / ai_model_api_key)
+    #   - a project synced from the Gitea 'remediation' repo
+    #   - the three job templates + two workflows described in the lab
+    #   - an EDA project and rulebook activation whose Kafka source points at
+    #     control_private_ip : kafka_port, topic kafka_topic
+    # All credential-bearing tasks must set no_log: true.
+    # -----------------------------------------------------------------------
+    - name: Placeholder - demo content not yet supplied
+      ansible.builtin.debug:
+        msg: >-
+          demo_content_enabled is true, but no content tasks are implemented in
+          this role. Point demo_content_git_url at your copy of the content and
+          implement the resource-creation tasks. See roles/demo_content/README.md.

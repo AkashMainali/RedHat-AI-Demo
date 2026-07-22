@@ -1,0 +1,18 @@
+# Managed by Ansible - Filebeat ships Apache logs to Kafka on the control node.
+filebeat.inputs:
+  - type: filestream
+    id: httpd-logs
+    enabled: true
+    paths:
+      - /var/log/httpd/*_log
+
+output.kafka:
+  hosts: ["{{ kafka_host }}:{{ kafka_port }}"]
+  topic: "{{ kafka_topic }}"
+  partition.round_robin:
+    reachable_only: true
+  required_acks: 1
+  compression: gzip
+  max_message_bytes: 1000000
+
+logging.level: info

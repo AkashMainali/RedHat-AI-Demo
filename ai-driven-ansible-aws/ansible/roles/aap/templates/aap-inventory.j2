@@ -1,0 +1,45 @@
+# Managed by Ansible - AAP 2.5 containerized "growth" (all-in-one) inventory.
+# Written mode 0600, owned by the lab user. All passwords are injected from the
+# operator's environment at runtime; nothing is committed to source control.
+#
+# NOTE: containerized-installer variable names occasionally change across 2.5.x
+# minors. If the installer rejects a variable, confirm the current name in the
+# Red Hat "Containerized installation" guide for your exact version.
+
+[automationgateway]
+localhost ansible_connection=local
+
+[automationcontroller]
+localhost ansible_connection=local
+
+[automationhub]
+localhost ansible_connection=local
+
+[automationeda]
+localhost ansible_connection=local
+
+[database]
+localhost ansible_connection=local
+
+[all:vars]
+# --- Container registry (registry.redhat.io service account) ---
+registry_username={{ registry_username }}
+registry_password={{ registry_password }}
+
+# --- Admin passwords ---
+gateway_admin_password={{ aap_admin_password }}
+controller_admin_password={{ aap_admin_password }}
+hub_admin_password={{ aap_admin_password }}
+eda_admin_password={{ aap_admin_password }}
+
+# --- Component PostgreSQL passwords ---
+gateway_pg_password={{ aap_admin_password }}
+controller_pg_password={{ aap_admin_password }}
+hub_pg_password={{ aap_admin_password }}
+eda_pg_password={{ aap_admin_password }}
+postgresql_admin_password={{ aap_admin_password }}
+
+# --- Topology / misc ---
+redis_mode=standalone
+# The installer generates self-signed TLS certificates by default, which is
+# fine for a demo. Provide your own cert vars here for a trusted chain.

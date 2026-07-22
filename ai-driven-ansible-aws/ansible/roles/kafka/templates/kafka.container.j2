@@ -1,0 +1,30 @@
+# Managed by Ansible - Kafka (KRaft, single node) as a Quadlet unit.
+[Unit]
+Description=Apache Kafka (KRaft single-node)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{ kafka_image }}
+ContainerName=kafka
+Network=aiops
+PublishPort={{ kafka_port }}:9092
+Environment=KAFKA_NODE_ID=1
+Environment=KAFKA_PROCESS_ROLES=broker,controller
+Environment=KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+Environment=KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://{{ control_private_ip }}:{{ kafka_port }}
+Environment=KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+Environment=KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+Environment=KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
+Environment=KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+Environment=KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+Environment=KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+Environment=KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+Environment=KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target default.target

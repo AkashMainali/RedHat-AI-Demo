@@ -1,0 +1,20 @@
+# Managed by Ansible - Mattermost (preview / all-in-one demo image) as a Quadlet unit.
+# The preview image bundles its own database and is intended for demos, not
+# production. For production use the separate mattermost + PostgreSQL images.
+[Unit]
+Description=Mattermost (preview)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{ mattermost_image }}
+ContainerName=mattermost
+Network=aiops
+PublishPort={{ mattermost_port }}:8065
+
+[Service]
+Restart=always
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target default.target

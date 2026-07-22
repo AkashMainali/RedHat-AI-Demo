@@ -1,0 +1,61 @@
+---
+- name: Ansible Automation Platform (containerized) install
+  when: aap_install_enabled | bool
+  block:
+    - name: Validate the inputs AAP requires
+      ansible.builtin.assert:
+        that:
+          - registry_username | length > 0
+          - registry_password | length > 0
+          - aap_admin_password | length > 0
+        fail_msg: >-
+          AAP install requires RH_REGISTRY_USERNAME, RH_REGISTRY_PASSWORD and
+          AAP_ADMIN_PASSWORD in the environment. Set aap_install_enabled=false
+          in group_vars/all.yml to provision everything except AAP.
+        quiet: true
+
+    - name: Enable the Ansible Automation Platform repository
+      community.general.rhsm_repository:
+        name: "{{ aap_repo }}"
+        state: enabled
+
+    - name: Install the containerized AAP setup package
+      ansible.builtin.dnf:
+        name: "{{ aap_setup_package }}"
+        state: present
+
+    - name: Template the containerized installer inventory (mode 0600, no_log)
+      ansible.builtin.template:
+        src: aap-inventory.j2
+        dest: "{{ aap_inventory_path }}"
+        owner: "{{ lab_user }}"
+        group: "{{ lab_user }}"
+        mode: "0600"
+      no_log: true
+
+    - name: Open the AAP gateway port (443) in firewalld
+      ansible.posix.firewalld:
+        service: https
+        permanent: true
+        immediate: true
+        state: enabled
+
+    - name: Run the AAP containerized installer (runs rootless as the lab user; takes a while)
+      ansible.builtin.command:
+        cmd: "ansible-playbook -i {{ aap_inventory_path }} {{ aap_installer_playbook }}"
+      become: true
+      become_user: "{{ lab_user }}"
+      register: aap_install
+      changed_when: aap_install.rc == 0
+  rescue:
+    - name: Surface actionable AAP install guidance
+      ansible.builtin.fail:
+        msg: >-
+          The AAP containerized install failed. This step is version- and
+          entitlement-sensitive. Verify: (1) your subscription includes Ansible
+          Automation Platform 2.5; (2) the repo '{{ aap_repo }}' and package
+          '{{ aap_setup_package }}' resolve on this RHEL 9 minor version; (3)
+          the exact installer inventory variable names for your 2.5.x - confirm
+          against the Containerized Installation guide. Re-run this play after
+          fixing, or set aap_install_enabled=false to skip AAP and keep the rest
+          of the environment.

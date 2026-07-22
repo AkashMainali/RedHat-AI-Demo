@@ -1,0 +1,28 @@
+# Managed by Ansible - Gitea as a Quadlet unit.
+# NOTE: this build serves Gitea over HTTP on the host port. Front it with the
+# nginx/TLS terminator if you need HTTPS on {{ gitea_http_port }}.
+[Unit]
+Description=Gitea
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{ gitea_image }}
+ContainerName=gitea
+Network=aiops
+PublishPort={{ gitea_http_port }}:3000
+Volume=/opt/gitea/data:/data:Z
+User=1000:1000
+Environment=USER_UID=1000
+Environment=USER_GID=1000
+Environment=GITEA__server__HTTP_PORT=3000
+Environment=GITEA__server__ROOT_URL=http://{{ control_public_ip }}:{{ gitea_http_port }}/
+Environment=GITEA__security__INSTALL_LOCK=true
+Environment=GITEA__service__DISABLE_REGISTRATION=true
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target default.target

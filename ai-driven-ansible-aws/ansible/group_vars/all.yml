@@ -1,0 +1,71 @@
+---
+# =============================================================================
+# NON-SECRET configuration + secret INDIRECTION.
+#
+# Secrets are never written here. Each secret is resolved at runtime from an
+# environment variable exported by scripts/collect-secrets.sh. This file only
+# names the lookups - it holds no values. Tasks consuming these set no_log.
+# =============================================================================
+
+# --- Identity / access ------------------------------------------------------
+lab_user: lab-user
+
+# --- Red Hat subscription (activation key preferred; user/pass fallback) -----
+rhsm_org_id:         "{{ lookup('ansible.builtin.env', 'RHSM_ORG_ID')         | default('', true) }}"
+rhsm_activation_key: "{{ lookup('ansible.builtin.env', 'RHSM_ACTIVATION_KEY') | default('', true) }}"
+rhsm_username:       "{{ lookup('ansible.builtin.env', 'RHSM_USERNAME')       | default('', true) }}"
+rhsm_password:       "{{ lookup('ansible.builtin.env', 'RHSM_PASSWORD')       | default('', true) }}"
+
+# --- registry.redhat.io service account (for AAP container images) -----------
+registry_username: "{{ lookup('ansible.builtin.env', 'RH_REGISTRY_USERNAME') | default('', true) }}"
+registry_password: "{{ lookup('ansible.builtin.env', 'RH_REGISTRY_PASSWORD') | default('', true) }}"
+
+# --- Application passwords ---------------------------------------------------
+lab_user_password:    "{{ lookup('ansible.builtin.env', 'LAB_USER_PASSWORD')    | default('', true) }}"
+aap_admin_password:   "{{ lookup('ansible.builtin.env', 'AAP_ADMIN_PASSWORD')   | default('', true) }}"
+gitea_admin_password: "{{ lookup('ansible.builtin.env', 'GITEA_ADMIN_PASSWORD') | default(lab_user_password, true) }}"
+mm_admin_password:    "{{ lookup('ansible.builtin.env', 'MM_ADMIN_PASSWORD')    | default(lab_user_password, true) }}"
+
+# --- AI / Lightspeed (external services the operator supplies) ---------------
+lightspeed_api_key: "{{ lookup('ansible.builtin.env', 'LIGHTSPEED_API_KEY') | default('', true) }}"
+ai_model_endpoint:  "{{ lookup('ansible.builtin.env', 'AI_MODEL_ENDPOINT')  | default('', true) }}"
+ai_model_api_key:   "{{ lookup('ansible.builtin.env', 'AI_MODEL_API_KEY')   | default('', true) }}"
+
+# --- Kafka -------------------------------------------------------------------
+kafka_image:   "docker.io/apache/kafka:3.7.1"
+kafka_topic:   "httpd-events"
+kafka_port:    9092
+
+# --- Gitea -------------------------------------------------------------------
+gitea_image:      "docker.io/gitea/gitea:1.22"
+gitea_http_port:  488   # host port -> container 3000 (HTTP in this build)
+gitea_admin_user: "{{ lab_user }}"
+gitea_admin_email: "lab-user@demo.local"
+gitea_repo_name:  "remediation"
+
+# --- Mattermost --------------------------------------------------------------
+mattermost_image: "docker.io/mattermost/mattermost-preview:latest"
+mattermost_port:  8065
+mattermost_admin_user:  "ansibleadmin"
+mattermost_admin_email: "ansibleadmin@ansible.com"
+mattermost_team: "aiops"
+
+# --- Filebeat ----------------------------------------------------------------
+filebeat_major: "8"
+# Note: Elastic GPG key uses SHA1 (disabled in RHEL 9), so gpgcheck is false in repo config.
+
+# --- Ansible Automation Platform ---------------------------------------------
+# Full containerized install is heavy and version-sensitive. Leave enabled for
+# the complete demo; set to false to provision infra + services only.
+aap_install_enabled: true
+aap_repo: "ansible-automation-platform-2.5-for-rhel-9-x86_64-rpms"
+aap_setup_package: "ansible-automation-platform-containerized-setup"
+aap_installer_playbook: "ansible.containerized_installer.install"
+aap_inventory_path: "/home/{{ lab_user }}/aap-containerized-inventory"
+
+# --- Demo content (AAP job templates / workflows / EDA rulebook) -------------
+# The upstream demo content (job templates, workflows, EDA rulebooks, and the
+# exact AI prompts) is NOT publicly published, so this is disabled by default
+# and shipped as documented hooks. See roles/demo_content/README.md.
+demo_content_enabled: false
+demo_content_git_url: ""   # e.g. your fork of the playbook/rulebook content

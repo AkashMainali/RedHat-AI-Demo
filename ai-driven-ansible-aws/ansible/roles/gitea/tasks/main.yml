@@ -1,0 +1,71 @@
+---
+- name: Create the Gitea data directory
+  ansible.builtin.file:
+    path: /opt/gitea/data
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0755"
+
+- name: Deploy the Gitea quadlet unit
+  ansible.builtin.template:
+    src: gitea.container.j2
+    dest: /etc/containers/systemd/gitea.container
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd and restart gitea
+
+- name: Reload systemd so the generated Gitea service exists
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Start Gitea
+  ansible.builtin.systemd:
+    name: gitea.service
+    state: started
+
+- name: Open the Gitea port in firewalld
+  ansible.posix.firewalld:
+    port: "{{ gitea_http_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+
+- name: Wait for Gitea HTTP to respond
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gitea_http_port }}/"
+    status_code: [200, 302, 303]
+  register: gitea_up
+  retries: 30
+  delay: 5
+  until: gitea_up is succeeded
+
+- name: Create the Gitea admin user (idempotent)
+  ansible.builtin.command: >-
+    podman exec -u 0 gitea gitea admin user create
+    --username {{ gitea_admin_user }}
+    --password {{ gitea_admin_password }}
+    --email {{ gitea_admin_email }}
+    --admin --must-change-password=false
+  register: gitea_admin
+  changed_when: "'successfully created' in gitea_admin.stdout"
+  failed_when:
+    - gitea_admin.rc != 0
+    - "'already exists' not in (gitea_admin.stderr | default(''))"
+ 
+
+- name: Create the remediation repository (idempotent)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gitea_http_port }}/api/v1/user/repos"
+    method: POST
+    user: "{{ gitea_admin_user }}"
+    password: "{{ gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ gitea_repo_name }}"
+      private: false
+      auto_init: true
+    status_code: [201, 409]
+  no_log: true

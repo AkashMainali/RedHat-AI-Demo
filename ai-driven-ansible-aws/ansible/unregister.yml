@@ -1,0 +1,13 @@
+---
+# Run before `terraform destroy` to release Red Hat subscriptions cleanly so
+# the entitlements are not left consumed. Best-effort; ignores errors.
+- name: Unregister nodes from Red Hat Subscription Management
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Unregister from RHSM
+      community.general.redhat_subscription:
+        state: absent
+      ignore_errors: true
+      no_log: true

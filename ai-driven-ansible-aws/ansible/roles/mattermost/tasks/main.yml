@@ -1,0 +1,46 @@
+---
+- name: Deploy the Mattermost quadlet unit
+  ansible.builtin.template:
+    src: mattermost.container.j2
+    dest: /etc/containers/systemd/mattermost.container
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd and restart mattermost
+
+- name: Reload systemd so the generated Mattermost service exists
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Start Mattermost
+  ansible.builtin.systemd:
+    name: mattermost.service
+    state: started
+
+- name: Open the Mattermost port in firewalld
+  ansible.posix.firewalld:
+    port: "{{ mattermost_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+
+- name: Wait for Mattermost to respond
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mattermost_port }}/api/v4/system/ping"
+    status_code: 200
+  register: mm_up
+  retries: 40
+  delay: 5
+  until: mm_up is succeeded
+
+- name: Create the initial Mattermost admin user (first-user bootstrap, idempotent)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mattermost_port }}/api/v4/users"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ mattermost_admin_email }}"
+      username: "{{ mattermost_admin_user }}"
+      password: "{{ mm_admin_password }}"
+    status_code: [201, 400]
+  no_log: true

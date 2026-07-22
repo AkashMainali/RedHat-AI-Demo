@@ -1,0 +1,32 @@
+---
+# =============================================================================
+# AI-Driven Ansible Automation demo - full stack configuration.
+#
+# All secrets are read from the environment via lookups defined in
+# group_vars/all.yml. Nothing secret is passed on the command line or written
+# to the repo. Tasks that handle secrets set no_log: true.
+# =============================================================================
+
+- name: Base configuration (all nodes)
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - role: common
+
+- name: Configure the RHEL target (httpd + Filebeat log shipping)
+  hosts: target
+  become: true
+  roles:
+    - role: target
+
+- name: Configure the control / services node
+  hosts: control
+  become: true
+  roles:
+    - role: control_base
+    - role: kafka
+    - role: gitea
+    - role: mattermost
+    - role: aap
+    - role: demo_content

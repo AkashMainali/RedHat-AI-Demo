@@ -1,0 +1,44 @@
+---
+- name: Deploy the Kafka quadlet unit
+  ansible.builtin.template:
+    src: kafka.container.j2
+    dest: /etc/containers/systemd/kafka.container
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd and restart kafka
+
+- name: Reload systemd so the generated Kafka service exists
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Start Kafka
+  ansible.builtin.systemd:
+    name: kafka.service
+    state: started
+
+- name: Open the Kafka port in firewalld
+  ansible.posix.firewalld:
+    port: "{{ kafka_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+
+- name: Wait for Kafka to accept connections
+  ansible.builtin.wait_for:
+    host: "{{ control_private_ip }}"
+    port: "{{ kafka_port }}"
+    timeout: 240
+
+- name: Create the demo Kafka topic (idempotent)
+  ansible.builtin.command: >-
+    podman exec kafka /opt/kafka/bin/kafka-topics.sh
+    --bootstrap-server localhost:9092
+    --create --if-not-exists
+    --topic {{ kafka_topic }}
+    --partitions 1 --replication-factor 1
+  register: kafka_topic_create
+  changed_when: "'Created topic' in kafka_topic_create.stdout"
+  retries: 6
+  delay: 10
+  until: kafka_topic_create.rc == 0

@@ -1,0 +1,12 @@
+---
+# Galaxy collections required by the base roles.
+collections:
+  - name: community.general      # redhat_subscription, rhsm_repository
+  - name: ansible.posix          # firewalld
+  - name: containers.podman      # podman_network, podman_container
+
+# The (optional, default-off) demo_content role additionally uses AAP config
+# collections. Install these from Red Hat Automation Hub if you enable it:
+#   - name: awx.awx              # or ansible.controller (Automation Hub)
+#   - name: ansible.eda
+#   - name: infra.aap_configuration

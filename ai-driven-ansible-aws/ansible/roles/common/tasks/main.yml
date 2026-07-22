@@ -1,0 +1,65 @@
+---
+- name: Validate that subscription credentials were supplied
+  ansible.builtin.assert:
+    that:
+      - (rhsm_activation_key | length > 0 and rhsm_org_id | length > 0) or
+        (rhsm_username | length > 0 and rhsm_password | length > 0)
+    fail_msg: >-
+      No Red Hat subscription credentials found in the environment. Provide
+      either RHSM_ACTIVATION_KEY + RHSM_ORG_ID or RHSM_USERNAME + RHSM_PASSWORD
+      (the bootstrap script collects these securely).
+    quiet: true
+
+- name: Register with Red Hat Subscription Management (activation key)
+  community.general.redhat_subscription:
+    state: present
+    org_id: "{{ rhsm_org_id }}"
+    activationkey: "{{ rhsm_activation_key }}"
+  when: rhsm_activation_key | length > 0
+  no_log: true
+
+- name: Register with Red Hat Subscription Management (username/password)
+  community.general.redhat_subscription:
+    state: present
+    username: "{{ rhsm_username }}"
+    password: "{{ rhsm_password }}"
+    auto_attach: true
+  when: rhsm_activation_key | length == 0
+  no_log: true
+
+- name: Ensure base packages are present
+  ansible.builtin.dnf:
+    name:
+      - podman
+      - git
+      - firewalld
+      - python3
+      - python3-pip
+      - tar
+      - jq
+      - policycoreutils-python-utils
+    state: present
+
+- name: Ensure firewalld is running
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+
+- name: Create the lab user
+  ansible.builtin.user:
+    name: "{{ lab_user }}"
+    password: "{{ lab_user_password | password_hash('sha512') }}"
+    groups: wheel
+    append: true
+    shell: /bin/bash
+    create_home: true
+
+- name: Grant the lab user passwordless sudo (demo convenience)
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/90-{{ lab_user }}"
+    content: "{{ lab_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"

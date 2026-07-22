@@ -1,0 +1,30 @@
+---
+- name: Ensure podman and quadlet support are present
+  ansible.builtin.dnf:
+    name:
+      - podman
+      - container-selinux
+    state: present
+
+- name: Ensure the quadlet unit directory exists
+  ansible.builtin.file:
+    path: /etc/containers/systemd
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the shared podman network
+  containers.podman.podman_network:
+    name: aiops
+    state: present
+
+- name: Log in to registry.redhat.io for Red Hat container content
+  containers.podman.podman_login:
+    registry: registry.redhat.io
+    username: "{{ registry_username }}"
+    password: "{{ registry_password }}"
+  when:
+    - registry_username | length > 0
+    - registry_password | length > 0
+  no_log: true

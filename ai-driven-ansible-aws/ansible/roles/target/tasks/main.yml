@@ -1,0 +1,58 @@
+---
+# --- Apache httpd: the service that "fails" and is remediated ----------------
+- name: Install Apache httpd
+  ansible.builtin.dnf:
+    name: httpd
+    state: present
+
+- name: Deploy landing page
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: /var/www/html/index.html
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and start httpd
+  ansible.builtin.service:
+    name: httpd
+    state: started
+    enabled: true
+
+- name: Open httpd port in firewalld
+  ansible.posix.firewalld:
+    service: http
+    permanent: true
+    immediate: true
+    state: enabled
+
+# --- Filebeat: ships httpd logs to Kafka on the control node -----------------
+# Note: Elastic's GPG key uses SHA1, which newer RHEL 9 disables by default.
+# For this demo, gpgcheck is disabled. For production, use RHEL's signed Filebeat.
+- name: Add Elastic yum repository
+  ansible.builtin.yum_repository:
+    name: elastic
+    description: "Elastic {{ filebeat_major }}.x"
+    baseurl: "https://artifacts.elastic.co/packages/{{ filebeat_major }}.x/yum"
+    gpgcheck: false
+    enabled: true
+
+- name: Install Filebeat
+  ansible.builtin.dnf:
+    name: filebeat
+    state: present
+
+- name: Configure Filebeat -> Kafka output
+  ansible.builtin.template:
+    src: filebeat.yml.j2
+    dest: /etc/filebeat/filebeat.yml
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart filebeat
+
+- name: Enable and start Filebeat
+  ansible.builtin.service:
+    name: filebeat
+    state: started
+    enabled: true
