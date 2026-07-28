@@ -14,15 +14,61 @@
           in group_vars/all.yml to provision everything except AAP.
         quiet: true
 
-    - name: Enable the Ansible Automation Platform repository
-      community.general.rhsm_repository:
-        name: "{{ aap_repo }}"
-        state: enabled
-
-    - name: Install the containerized AAP setup package
+    - name: Install compression utilities needed for AAP tarball extraction
       ansible.builtin.dnf:
-        name: "{{ aap_setup_package }}"
+        name:
+          - tar
+          - gzip
+          - bzip2
+          - xz
+          - zstd
+          - unzip
         state: present
+
+    - name: Create AAP installer directory
+      ansible.builtin.file:
+        path: "/tmp/aap-installer"
+        state: directory
+        mode: "0755"
+
+    - name: Find local AAP tarball in ansible/aap/ directory
+      ansible.builtin.find:
+        paths: "{{ playbook_dir }}/aap"
+        patterns: "*.tar.gz"
+      register: local_aap_tarball
+      delegate_to: localhost
+      become: false
+
+    - name: Verify AAP tarball exists locally
+      ansible.builtin.assert:
+        that:
+          - local_aap_tarball.files | length > 0
+        fail_msg: >
+          No AAP tarball found in ansible/aap/ directory.
+          Please download the AAP 2.7 containerized setup tarball to ansible/aap/
+          from https://developers.redhat.com/products/ansible/download
+
+    - name: Copy AAP tarball from local ansible/aap/ to remote /tmp/aap-installer/
+      ansible.builtin.copy:
+        src: "{{ local_aap_tarball.files[0].path }}"
+        dest: "/tmp/aap-installer/aap.tar.gz"
+        mode: "0644"
+
+    - name: Extract AAP tarball
+      ansible.builtin.shell: |
+        cd /tmp/aap-installer && tar -xzf aap.tar.gz
+      register: extract_aap
+      changed_when: extract_aap.rc == 0
+
+    - name: Find the AAP installer directory
+      ansible.builtin.shell: |
+        ls -d /tmp/aap-installer/ansible-automation-platform-*/ 2>/dev/null | head -1
+      register: aap_dir
+      changed_when: false
+
+    - name: Set AAP installer path
+      ansible.builtin.set_fact:
+        aap_installer_dir: "{{ aap_dir.stdout | regex_replace('/$', '') }}"
 
     - name: Template the containerized installer inventory (mode 0600, no_log)
       ansible.builtin.template:
@@ -40,22 +86,29 @@
         immediate: true
         state: enabled
 
-    - name: Run the AAP containerized installer (runs rootless as the lab user; takes a while)
-      ansible.builtin.command:
-        cmd: "ansible-playbook -i {{ aap_inventory_path }} {{ aap_installer_playbook }}"
+    - name: Install Ansible (required for AAP containerized installer)
+      ansible.builtin.dnf:
+        name: ansible-core
+        state: present
+
+    - name: Run the AAP containerized installer from tarball (runs rootless as the lab user; takes a while)
+      ansible.builtin.shell: |
+        cd "{{ aap_installer_dir }}" && \
+        /usr/bin/ansible-playbook -i {{ aap_inventory_path }} \
+          -v \
+          ansible.containerized_installer.install
       become: true
       become_user: "{{ lab_user }}"
       register: aap_install
       changed_when: aap_install.rc == 0
+      timeout: 3600
   rescue:
     - name: Surface actionable AAP install guidance
       ansible.builtin.fail:
         msg: >-
-          The AAP containerized install failed. This step is version- and
-          entitlement-sensitive. Verify: (1) your subscription includes Ansible
-          Automation Platform 2.5; (2) the repo '{{ aap_repo }}' and package
-          '{{ aap_setup_package }}' resolve on this RHEL 9 minor version; (3)
-          the exact installer inventory variable names for your 2.5.x - confirm
-          against the Containerized Installation guide. Re-run this play after
-          fixing, or set aap_install_enabled=false to skip AAP and keep the rest
-          of the environment.
+          The AAP 2.7 containerized install from tarball on RHEL 10 failed.
+          Verify: (1) your Red Hat credentials are correct (RH_REGISTRY_USERNAME/PASSWORD);
+          (2) the tarball download URL is accessible; (3) the installer inventory variables
+          for AAP 2.7 are correct - confirm against the Containerized Installation guide.
+          Re-run this play after fixing, or set aap_install_enabled=false to skip AAP
+          and keep the rest of the environment.

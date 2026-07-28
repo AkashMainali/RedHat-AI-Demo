@@ -23,4 +23,8 @@ resource "aws_kms_key" "ebs" {
 resource "aws_kms_alias" "ebs" {
   name          = "alias/${local.name_prefix}-ebs"
   target_key_id = aws_kms_key.ebs.key_id
+
+  lifecycle {
+    ignore_changes = all
+  }
 }

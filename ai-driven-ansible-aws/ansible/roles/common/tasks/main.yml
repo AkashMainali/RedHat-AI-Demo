@@ -19,13 +19,14 @@
   no_log: true
 
 - name: Register with Red Hat Subscription Management (username/password)
-  community.general.redhat_subscription:
-    state: present
-    username: "{{ rhsm_username }}"
-    password: "{{ rhsm_password }}"
-    auto_attach: true
+  ansible.builtin.shell: |
+    subscription-manager register --username {{ rhsm_username }} --password '{{ rhsm_password }}'
   when: rhsm_activation_key | length == 0
   no_log: true
+  register: rhsm_register
+  failed_when:
+    - rhsm_register.rc != 0
+    - "'already registered' not in rhsm_register.stderr"
 
 - name: Ensure base packages are present
   ansible.builtin.dnf:
@@ -54,6 +55,7 @@
     append: true
     shell: /bin/bash
     create_home: true
+  no_log: true
 
 - name: Grant the lab user passwordless sudo (demo convenience)
   ansible.builtin.copy:

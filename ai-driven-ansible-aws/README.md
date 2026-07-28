@@ -10,9 +10,9 @@ lab as reusable Infrastructure as Code so you can run it in your own account.
 
 ## Architecture
 
-Two RHEL 9 nodes in a dedicated VPC (public subnet, internet gateway):
+Two RHEL 10 nodes in a dedicated VPC (public subnet, internet gateway):
 
-- **control** (`m6i.2xlarge`) — Ansible Automation Platform 2.5 (containerized,
+- **control** (`m6i.2xlarge`) — Ansible Automation Platform 2.7 (containerized,
   all-in-one incl. EDA), plus Kafka (KRaft), Gitea, and Mattermost as Podman
   Quadlet services.
 - **target** (`t3.medium`) — the RHEL webserver running `httpd` with Filebeat

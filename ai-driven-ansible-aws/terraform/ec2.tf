@@ -2,6 +2,10 @@ resource "aws_key_pair" "this" {
   key_name   = "${local.name_prefix}-key"
   public_key = var.ssh_public_key
   tags       = { Name = "${local.name_prefix}-key" }
+
+  lifecycle {
+    ignore_changes = all
+  }
 }
 
 locals {

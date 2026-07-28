@@ -10,13 +10,19 @@
 # This file is meant to be `source`d, not executed.
 # =============================================================================
 
-# _read_secret <prompt> <varname> <required:0|1> <confirm:0|1>
+# _read_secret <prompt> <varname> <required:0|1> <confirm:0|1> <default:empty>
 _read_secret() {
-  local prompt="$1" var="$2" required="${3:-0}" confirm="${4:-0}" val val2
+  local prompt="$1" var="$2" required="${3:-0}" confirm="${4:-0}" default="${5:-}" val val2
   while true; do
-    printf '%s: ' "${prompt}" > /dev/tty
+    local prompt_text="${prompt}"
+    [[ -n "${default}" ]] && prompt_text="${prompt} [default: ${default}]"
+    printf '%s: ' "${prompt_text}" > /dev/tty
     IFS= read -rs val < /dev/tty
     printf '\n' > /dev/tty
+
+    # Use default if empty input provided
+    [[ -z "${val}" && -n "${default}" ]] && val="${default}"
+
     if [[ -z "${val}" && "${required}" -eq 1 ]]; then
       printf '  (required — please enter a value)\n' > /dev/tty
       continue
@@ -63,11 +69,11 @@ collect_secrets() {
   printf '\n-- registry.redhat.io service account (needed for AAP images) --\n' > /dev/tty
   printf '   Leave blank if you set aap_install_enabled=false.\n' > /dev/tty
   _read_plain  "  Registry service-account username" RH_REGISTRY_USERNAME
-  _read_secret "  Registry service-account token" RH_REGISTRY_PASSWORD 0 0
+  _read_secret "  Registry service-account password" RH_REGISTRY_PASSWORD 0 0
 
   printf '\n== Application passwords (hidden, entered twice) ==\n' > /dev/tty
-  _read_secret "  lab-user password (UI + console logins)" LAB_USER_PASSWORD 1 1
-  _read_secret "  AAP admin password" AAP_ADMIN_PASSWORD 1 1
+  _read_secret "  lab-user password (UI + console logins)" LAB_USER_PASSWORD 1 1 "redhat"
+  _read_secret "  AAP admin password" AAP_ADMIN_PASSWORD 1 1 "redhat"
 
   printf '\n== AI services (optional — leave blank to wire up later) ==\n' > /dev/tty
   _read_secret "  Ansible Lightspeed API key" LIGHTSPEED_API_KEY 0 0

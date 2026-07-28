@@ -1,4 +1,23 @@
 ---
+- name: Stop Gitea service if running
+  ansible.builtin.systemd:
+    name: gitea.service
+    state: stopped
+  failed_when: false
+  ignore_errors: true
+
+- name: Remove stale Gitea container if stuck
+  containers.podman.podman_container:
+    name: gitea
+    state: absent
+  failed_when: false
+  ignore_errors: true
+
+- name: Clean the Gitea data directory for a fresh start
+  ansible.builtin.file:
+    path: /opt/gitea/data
+    state: absent
+
 - name: Create the Gitea data directory
   ansible.builtin.file:
     path: /opt/gitea/data
@@ -52,11 +71,11 @@
   changed_when: "'successfully created' in gitea_admin.stdout"
   failed_when:
     - gitea_admin.rc != 0
-    - "'already exists' not in gitea_admin.stdout"
+    - "'already exists' not in gitea_admin.stdout and 'already exists' not in gitea_admin.stderr"
   no_log: true
-  retries: 5
-  delay: 3
-  until: gitea_admin.rc == 0 or 'already exists' in gitea_admin.stdout
+  retries: 3
+  delay: 2
+  until: gitea_admin.rc == 0 or 'already exists' in gitea_admin.stdout or 'already exists' in gitea_admin.stderr
 
 - name: Create the remediation repository (idempotent)
   ansible.builtin.uri:

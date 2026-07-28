@@ -27,7 +27,7 @@
     state: enabled
 
 # --- Filebeat: ships httpd logs to Kafka on the control node -----------------
-# Note: Elastic's GPG key uses SHA1, which newer RHEL 9 disables by default.
+# Note: Elastic's GPG key uses SHA1, which newer RHEL versions (9+) disable by default.
 # For this demo, gpgcheck is disabled. For production, use RHEL's signed Filebeat.
 - name: Add Elastic yum repository
   ansible.builtin.yum_repository:

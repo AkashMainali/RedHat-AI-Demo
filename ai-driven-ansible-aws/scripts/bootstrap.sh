@@ -26,6 +26,7 @@ AWS_REGION_ARG="${AWS_REGION:-us-east-1}"
 AWS_PROFILE_ARG="${AWS_PROFILE:-}"
 SSH_KEY_PATH="${SSH_KEY_PATH:-${HOME}/.ssh/aiops_ansible_demo}"
 INGRESS_CIDR="${INGRESS_CIDR:-}"
+DEMO_USERNAME="${DEMO_USERNAME:-}"  # Optional prefix for all resource names
 AUTO_APPROVE=1  # Default: yes (Terraform is idempotent, safe to auto-approve)
 SKIP_ANSIBLE=0
 INFRA_ONLY=0
@@ -39,6 +40,7 @@ Terraform detects existing resources and skips recreation.
 
   --profile NAME        AWS SSO/CLI profile to use (else default chain / AWS_PROFILE)
   --region NAME         AWS region (default: ${AWS_REGION_ARG})
+  --username NAME       Prefix for all resource names (default: prompted at runtime)
   --ingress-cidr CIDR   Restrict access to this CIDR (default: auto-detected /32)
   --ssh-key PATH        SSH private key path to use/create (default: ${SSH_KEY_PATH})
   --auto-approve        Do not prompt for Terraform apply confirmation (default: yes)
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)      AWS_PROFILE_ARG="$2"; shift 2 ;;
     --region)       AWS_REGION_ARG="$2"; shift 2 ;;
+    --username)     DEMO_USERNAME="$2"; shift 2 ;;
     --ingress-cidr) INGRESS_CIDR="$2"; shift 2 ;;
     --ssh-key)      SSH_KEY_PATH="$2"; shift 2 ;;
     --auto-approve) AUTO_APPROVE=1; shift ;;
@@ -73,13 +76,25 @@ cleanup_env() {
         RH_REGISTRY_USERNAME RH_REGISTRY_PASSWORD LAB_USER_PASSWORD \
         AAP_ADMIN_PASSWORD GITEA_ADMIN_PASSWORD MM_ADMIN_PASSWORD \
         LIGHTSPEED_API_KEY AI_MODEL_ENDPOINT AI_MODEL_API_KEY 2>/dev/null || true
+  # (passwords are now defaulted to 'redhat', but still cleaned up after use)
 }
 trap cleanup_env EXIT INT TERM
 
 # --- 1. preflight -----------------------------------------------------------
 bash "${SCRIPT_DIR}/preflight.sh"
 
-# --- 2. AWS auth (SSO / profile / STS env) — never handles static keys ------
+# --- 2. prompt for optional username (prefixes all resource names) -----------
+if [[ -z "${DEMO_USERNAME}" ]]; then
+  printf '\n== Resource naming ==\n' >&2
+  printf 'Enter a username to prefix all resource names (or press Enter for "aiops-ansible-demo"):\n' >&2
+  printf 'Example: if you enter "David", resources will be named "David-aiops-ansible-demo-*"\n' >&2
+  printf 'Username [aiops-ansible-demo]: ' >&2
+  IFS= read -r DEMO_USERNAME
+  DEMO_USERNAME="${DEMO_USERNAME:-aiops-ansible-demo}"
+fi
+log "Resource prefix: ${DEMO_USERNAME}"
+
+# --- 3. AWS auth (SSO / profile / STS env) — never handles static keys ------
 [[ -n "${AWS_PROFILE_ARG}" ]] && export AWS_PROFILE="${AWS_PROFILE_ARG}"
 export AWS_REGION="${AWS_REGION_ARG}" AWS_DEFAULT_REGION="${AWS_REGION_ARG}"
 
@@ -136,6 +151,7 @@ fi
 if [[ "${INFRA_ONLY}" -eq 0 ]]; then
   export TF_VAR_aws_region="${AWS_REGION}"
   [[ -n "${AWS_PROFILE:-}" ]] && export TF_VAR_aws_profile="${AWS_PROFILE}"
+  export TF_VAR_project_name="${DEMO_USERNAME}"
   export TF_VAR_allowed_ingress_cidrs="[\"${INGRESS_CIDR}\"]"
   export TF_VAR_ssh_public_key="${SSH_PUB}"
 
@@ -149,6 +165,7 @@ else
   log "Skipping terraform (infrastructure already exists)"
   export TF_VAR_aws_region="${AWS_REGION}"
   [[ -n "${AWS_PROFILE:-}" ]] && export TF_VAR_aws_profile="${AWS_PROFILE}"
+  export TF_VAR_project_name="${DEMO_USERNAME}"
 fi
 
 # --- 8. read outputs --------------------------------------------------------
@@ -206,6 +223,6 @@ $(printf '\033[1;32mDONE\033[0m')  Environment is up.
   SSH (control): ssh -i ${SSH_KEY_PATH} ${SSH_USER}@${CONTROL_PUBLIC_IP}
   SSH (target) : ssh -i ${SSH_KEY_PATH} ${SSH_USER}@${TARGET_PUBLIC_IP}
 
-  UI login     : lab-user / <the lab-user password you entered>
+  UI login     : lab-user / redhat (or custom password if you entered one)
   Tear down    : scripts/cleanup.sh${AWS_PROFILE:+ --profile ${AWS_PROFILE}}
 EOF

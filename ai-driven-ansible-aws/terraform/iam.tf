@@ -21,6 +21,10 @@ resource "aws_iam_role" "instance" {
   name               = "${local.name_prefix}-instance"
   assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
   tags               = { Name = "${local.name_prefix}-instance" }
+
+  lifecycle {
+    ignore_changes = all
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "ssm" {

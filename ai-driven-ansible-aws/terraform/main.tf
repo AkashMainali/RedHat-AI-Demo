@@ -4,15 +4,15 @@ data "aws_availability_zones" "available" {
 
 data "aws_caller_identity" "current" {}
 
-# Newest Red Hat-owned RHEL 9 x86_64 AMI (owner 309956199498 == Red Hat, Inc.).
-data "aws_ami" "rhel9" {
+# Newest Red Hat-owned RHEL 10 x86_64 AMI (owner 309956199498 == Red Hat, Inc.).
+data "aws_ami" "rhel10" {
   count       = var.rhel_ami_id == null ? 1 : 0
   most_recent = true
   owners      = ["309956199498"]
 
   filter {
     name   = "name"
-    values = ["RHEL-9.*_HVM-*-x86_64-*-Hourly2-GP3"]
+    values = ["RHEL-10.*_HVM-*-x86_64-*-Hourly2-GP3"]
   }
   filter {
     name   = "architecture"
@@ -25,7 +25,7 @@ data "aws_ami" "rhel9" {
 }
 
 locals {
-  rhel_ami_id = var.rhel_ami_id != null ? var.rhel_ami_id : data.aws_ami.rhel9[0].id
+  rhel_ami_id = var.rhel_ami_id != null ? var.rhel_ami_id : data.aws_ami.rhel10[0].id
   name_prefix = "${var.project_name}-${var.environment}"
 }
 
