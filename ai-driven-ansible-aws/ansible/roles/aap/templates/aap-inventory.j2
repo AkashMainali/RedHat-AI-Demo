@@ -66,6 +66,12 @@ eda_admin_password={{ aap_admin_password }}
 eda_pg_host=localhost
 eda_pg_password={{ aap_admin_password }}
 
+# Automation Metrics (optional, disabled by default)
+automationmetrics_pg_host=localhost
+automationmetrics_pg_password={{ aap_admin_password }}
+automationmetrics_controller_read_pg_host=localhost
+automationmetrics_controller_read_pg_password={{ aap_admin_password }}
+
 # SSL/TLS certificates
 # Installer generates self-signed certificates by default (fine for demo).
 # For production, provide your own certificate and key files.
