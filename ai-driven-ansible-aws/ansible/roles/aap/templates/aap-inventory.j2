@@ -1,74 +1,67 @@
-# Managed by Ansible - AAP 2.7 containerized "growth" (single-node) inventory on RHEL 10.
-# Written mode 0600, owned by the lab user. All passwords are injected from the
-# operator's environment at runtime; nothing is committed to source control.
+# AAP 2.7 Containerized Growth (Single-Node) Topology Inventory
+# Based on official Red Hat documentation for RHEL 10
+# All passwords are injected from environment at runtime; nothing is committed to source control.
 #
 # Growth topology: All components (Gateway, Controller, Hub, EDA, Database, Redis) on single node.
-# Based on Red Hat AAP 2.7 official documentation for RHEL 10.
+# For production use, replace placeholder passwords and hostnames.
 
+# Platform Gateway hosts
 [automationgateway]
 localhost ansible_connection=local
 
+# Automation Controller hosts
 [automationcontroller]
 localhost ansible_connection=local
 
+# Automation Hub hosts
 [automationhub]
 localhost ansible_connection=local
 
+# Event-Driven Ansible controller hosts
 [automationeda]
 localhost ansible_connection=local
 
+# Database host (local/embedded PostgreSQL)
 [database]
 localhost ansible_connection=local
 
 [all:vars]
-# --- Host and connection ---
+# Ansible connection
 ansible_connection=local
-controller_hostname=localhost
 
-# --- Container registry (registry.redhat.io service account) ---
-registry_username={{ registry_username }}
-registry_password={{ registry_password }}
-
-# --- PostgreSQL database (local/embedded - required for growth topology) ---
+# PostgreSQL database (local/embedded)
 postgresql_admin_username=postgres
 postgresql_admin_password={{ aap_admin_password }}
 
-# --- Gateway component ---
-gateway_admin_password={{ aap_admin_password }}
-gateway_pg_host=localhost
-gateway_pg_port=5432
-gateway_pg_password={{ aap_admin_password }}
+# Container registry credentials (registry.redhat.io)
+registry_username={{ registry_username }}
+registry_password={{ registry_password }}
 
-# --- Controller component ---
-controller_admin_password={{ aap_admin_password }}
-controller_pg_host=localhost
-controller_pg_port=5432
-controller_pg_password={{ aap_admin_password }}
-
-# --- Hub component ---
-automationhub_admin_password={{ aap_admin_password }}
-hub_pg_host=localhost
-hub_pg_port=5432
-hub_pg_password={{ aap_admin_password }}
-
-# --- EDA component ---
-automationeda_admin_password={{ aap_admin_password }}
-eda_pg_host=localhost
-eda_pg_port=5432
-eda_pg_password={{ aap_admin_password }}
-
-# --- Redis (standalone mode for single-node) ---
+# Redis configuration
 redis_mode=standalone
 
-# --- Optional: Metrics service (disabled by default for demo) ---
-# Uncomment to enable metrics tracking:
-# enable_metrics_service=true
-# metrics_admin_password={{ aap_admin_password }}
-# metrics_data_retention_days=30
+# Platform Gateway
+gateway_admin_password={{ aap_admin_password }}
+gateway_pg_host=localhost
+gateway_pg_password={{ aap_admin_password }}
 
-# --- Installer behavior (disable preflight checks for demo environment) ---
-preflight_checks=false
+# Automation Controller
+controller_admin_password={{ aap_admin_password }}
+controller_pg_host=localhost
+controller_pg_password={{ aap_admin_password }}
+controller_percent_memory_capacity=0.5
 
-# --- SSL/TLS certificates ---
-# The installer generates self-signed TLS certificates by default, which is
-# fine for a demo. Provide your own cert vars here for a production deployment.
+# Automation Hub
+hub_admin_password={{ aap_admin_password }}
+hub_pg_host=localhost
+hub_pg_password={{ aap_admin_password }}
+hub_seed_collections=false
+
+# Event-Driven Ansible
+eda_admin_password={{ aap_admin_password }}
+eda_pg_host=localhost
+eda_pg_password={{ aap_admin_password }}
+
+# SSL/TLS certificates
+# Installer generates self-signed certificates by default (fine for demo).
+# For production, provide your own certificate and key files.
