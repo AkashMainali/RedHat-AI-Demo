@@ -112,9 +112,9 @@ output`):
 
 | System      | URL                          | Login                              |
 |-------------|------------------------------|------------------------------------|
-| AAP         | `https://<control-ip>`       | `lab-user` / *(password you set)*  |
-| Gitea       | `http://<control-ip>:488`    | `lab-user` / *(password you set)*  |
-| Mattermost  | `http://<control-ip>:8065`   | `ansibleadmin@ansible.com` / *set* |
+| AAP         | `https://<control-ip>`       | `lab-user` / `redhat`              |
+| Gitea       | `http://<control-ip>:488`    | `lab-user` / `redhat`              |
+| Mattermost  | `http://<control-ip>:8065`   | `ansibleadmin` / `ansibleredhat`   |
 | Webserver   | `http://<target-ip>`         | —                                  |
 
 AAP uses a self-signed certificate by default, so expect a browser warning.

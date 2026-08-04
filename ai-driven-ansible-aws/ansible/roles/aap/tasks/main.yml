@@ -2,15 +2,76 @@
 - name: Ansible Automation Platform (containerized) install
   when: aap_install_enabled | bool
   block:
+    - name: Gather system facts to get hostname
+      ansible.builtin.setup:
+        gather_subset: all
+      register: system_facts
+
+    - name: Set hostname variable for inventory
+      ansible.builtin.set_fact:
+        system_hostname: "{{ ansible_hostname }}"
+
+    - name: Ensure system hostname resolves to the control node's private IP in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{ control_private_ip }} {{ system_hostname }} {{ system_hostname }}.local"
+        regexp: "^.*{{ system_hostname }}"
+        state: present
+      become: true
+
+    - name: Create encrypted vault file on control node
+      block:
+        - name: Create vault password file on control node
+          ansible.builtin.copy:
+            content: "{{ vault_password }}"
+            dest: "/home/{{ lab_user }}/.vault_pass"
+            mode: "0600"
+            owner: "{{ lab_user }}"
+            group: "{{ lab_user }}"
+          no_log: true
+
+        - name: Create vault YAML content
+          ansible.builtin.copy:
+            content: |
+              registry_username: {{ rh_registry_username | quote }}
+              registry_password: {{ rh_registry_password | quote }}
+            dest: "/home/{{ lab_user }}/.vault.yml"
+            mode: "0600"
+            owner: "{{ lab_user }}"
+            group: "{{ lab_user }}"
+          no_log: true
+
+        - name: Encrypt vault file using ansible-vault
+          ansible.builtin.shell: |
+            ansible-vault encrypt \
+              --vault-password-file /home/{{ lab_user }}/.vault_pass \
+              /home/{{ lab_user }}/.vault.yml && \
+            mv /home/{{ lab_user }}/.vault.yml /home/{{ lab_user }}/.vault
+          become: true
+          become_user: "{{ lab_user }}"
+          changed_when: true
+          no_log: true
+
+        - name: Verify vault file was created
+          ansible.builtin.stat:
+            path: "/home/{{ lab_user }}/.vault"
+          register: vault_file_stat
+
+        - name: Fail if vault file not created
+          ansible.builtin.fail:
+            msg: "Failed to create encrypted vault file on control node"
+          when: not vault_file_stat.stat.exists
+
     - name: Validate the inputs AAP requires
       ansible.builtin.assert:
         that:
-          - registry_username | length > 0
-          - registry_password | length > 0
+          - rh_registry_username | length > 0
+          - rh_registry_password | length > 0
+          - vault_password | length > 0
           - aap_admin_password | length > 0
         fail_msg: >-
-          AAP install requires RH_REGISTRY_USERNAME, RH_REGISTRY_PASSWORD and
-          AAP_ADMIN_PASSWORD in the environment. Set aap_install_enabled=false
+          AAP install requires registry credentials (rh_registry_username/password),
+          vault_password, and aap_admin_password. Set aap_install_enabled=false
           in group_vars/all.yml to provision everything except AAP.
         quiet: true
 
@@ -77,6 +138,7 @@
         owner: "{{ lab_user }}"
         group: "{{ lab_user }}"
         mode: "0600"
+      become: true
       no_log: true
 
     - name: Open the AAP gateway port (443) in firewalld
@@ -91,24 +153,67 @@
         name: ansible-core
         state: present
 
+    - name: Enable lingering for lab-user (required for user-scope systemd services)
+      ansible.builtin.command:
+        cmd: "loginctl enable-linger {{ lab_user }}"
+      changed_when: false
+      become: true
+
+    - name: Verify AAP inventory file exists
+      ansible.builtin.stat:
+        path: "{{ aap_inventory_path }}"
+      register: inventory_stat
+      become: true
+
+    - name: Fail if inventory file does not exist
+      ansible.builtin.fail:
+        msg: "AAP inventory file not found at {{ aap_inventory_path }}"
+      when: not inventory_stat.stat.exists
+
+    - name: Debug - Check AAP installer directory structure
+      ansible.builtin.shell: |
+        ls -la "{{ aap_installer_dir }}" | head -20
+        echo "---"
+        ls -la "{{ aap_installer_dir }}/collections/ansible_collections/" 2>/dev/null | grep containerized || echo "containerized_installer not found"
+      register: aap_dir_check
+      changed_when: false
+
+    - name: Debug - Show AAP directory check
+      ansible.builtin.debug:
+        var: aap_dir_check.stdout
+
     - name: Run the AAP containerized installer from tarball (runs rootless as the lab user; takes a while)
       ansible.builtin.shell: |
+        set -x
         cd "{{ aap_installer_dir }}" && \
-        /usr/bin/ansible-playbook -i {{ aap_inventory_path }} \
-          -v \
-          ansible.containerized_installer.install
+        export ANSIBLE_COLLECTIONS_PATH="{{ aap_installer_dir }}/collections:~/.ansible/collections:/usr/share/ansible/collections" && \
+        export ANSIBLE_LIBRARY="{{ aap_installer_dir }}/library" && \
+        /usr/bin/ansible-playbook \
+          -i {{ aap_inventory_path }} \
+          --vault-password-file /home/{{ lab_user }}/.vault_pass \
+          -e "@/home/{{ lab_user }}/.vault" \
+          -e "ansible_user={{ lab_user }}" \
+          -e "ansible_connection=local" \
+          -vvv \
+          ansible.containerized_installer.install 2>&1 | tee /tmp/aap_install.log
       become: true
       become_user: "{{ lab_user }}"
       register: aap_install
       changed_when: aap_install.rc == 0
       timeout: 3600
+      no_log: false
+
+    - name: Debug - Show AAP install output
+      ansible.builtin.debug:
+        msg: "{{ aap_install.stdout_lines[-50:] if aap_install.stdout_lines else 'No output' }}"
   rescue:
     - name: Surface actionable AAP install guidance
       ansible.builtin.fail:
         msg: >-
-          The AAP 2.7 containerized install from tarball on RHEL 10 failed.
+          The AAP 2.6 containerized install from tarball on RHEL 10 failed.
           Verify: (1) your Red Hat credentials are correct (RH_REGISTRY_USERNAME/PASSWORD);
           (2) the tarball download URL is accessible; (3) the installer inventory variables
-          for AAP 2.7 are correct - confirm against the Containerized Installation guide.
+          for AAP 2.6 are correct - confirm against the Containerized Installation guide.
+          Check /tmp/aap_install.log on the control node for detailed error messages.
           Re-run this play after fixing, or set aap_install_enabled=false to skip AAP
           and keep the rest of the environment.

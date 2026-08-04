@@ -24,7 +24,7 @@ registry_password: "{{ lookup('ansible.builtin.env', 'RH_REGISTRY_PASSWORD') | d
 lab_user_password:    "{{ lookup('ansible.builtin.env', 'LAB_USER_PASSWORD')    | default('', true) }}"
 aap_admin_password:   "{{ lookup('ansible.builtin.env', 'AAP_ADMIN_PASSWORD')   | default('', true) }}"
 gitea_admin_password: "{{ lookup('ansible.builtin.env', 'GITEA_ADMIN_PASSWORD') | default(lab_user_password, true) }}"
-mm_admin_password:    "{{ lookup('ansible.builtin.env', 'MM_ADMIN_PASSWORD')    | default(lab_user_password, true) }}"
+mm_admin_password:    "{{ lookup('ansible.builtin.env', 'MM_ADMIN_PASSWORD')    | default('ansibleredhat', true) }}"
 
 # --- AI / Lightspeed (external services the operator supplies) ---------------
 lightspeed_api_key: "{{ lookup('ansible.builtin.env', 'LIGHTSPEED_API_KEY') | default('', true) }}"
@@ -54,11 +54,11 @@ mattermost_team: "aiops"
 filebeat_major: "8"
 # Note: Elastic GPG key uses SHA1 (disabled in newer RHEL versions), so gpgcheck is false.
 
-# --- Ansible Automation Platform (RHEL 10 with AAP 2.7) -------------------
+# --- Ansible Automation Platform (RHEL 10 with AAP 2.6) -------------------
 # Full containerized install is heavy and version-sensitive. Leave enabled for
 # the complete demo; set to false to provision infra + services only.
 aap_install_enabled: true
-aap_repo: "ansible-automation-platform-2.7-for-rhel-10-x86_64-rpms"
+aap_repo: "ansible-automation-platform-2.6-for-rhel-10-x86_64-rpms"
 aap_setup_package: "ansible-automation-platform-containerized-setup"
 aap_installer_playbook: "ansible.containerized_installer.install"
 aap_inventory_path: "/home/{{ lab_user }}/aap-containerized-inventory"

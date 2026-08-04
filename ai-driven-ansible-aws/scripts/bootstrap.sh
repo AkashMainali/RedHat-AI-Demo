@@ -75,8 +75,10 @@ cleanup_env() {
   unset RHSM_ORG_ID RHSM_ACTIVATION_KEY RHSM_USERNAME RHSM_PASSWORD \
         RH_REGISTRY_USERNAME RH_REGISTRY_PASSWORD LAB_USER_PASSWORD \
         AAP_ADMIN_PASSWORD GITEA_ADMIN_PASSWORD MM_ADMIN_PASSWORD \
-        LIGHTSPEED_API_KEY AI_MODEL_ENDPOINT AI_MODEL_API_KEY 2>/dev/null || true
+        LIGHTSPEED_API_KEY AI_MODEL_ENDPOINT AI_MODEL_API_KEY \
+        VAULT_PASSWORD 2>/dev/null || true
   # (passwords are now defaulted to 'redhat', but still cleaned up after use)
+  # Note: Vault files (.vault and .vault_pass) remain in ansible/ for potential re-runs
 }
 trap cleanup_env EXIT INT TERM
 
@@ -129,6 +131,7 @@ if [[ "${SKIP_ANSIBLE}" -eq 0 ]]; then
   # shellcheck source=collect-secrets.sh
   source "${SCRIPT_DIR}/collect-secrets.sh"
   collect_secrets
+  log "Secrets collected in memory (vault file will be created on control node)"
 else
   warn "--skip-ansible set: skipping secret collection and demo configuration."
 fi
@@ -206,9 +209,19 @@ wait_for_ssh "${TARGET_PUBLIC_IP}"
 log "Installing Ansible collections"
 ansible-galaxy collection install -r "${ANSIBLE_DIR}/requirements.yml"
 
-# --- 12. configure everything (secrets stay in env; read via lookups) -------
+# --- 12. configure everything (secrets stay in env; vault created on server) -------
 log "Running site.yml (this includes the AAP containerized install and can take 20-40+ min)"
-( cd "${ANSIBLE_DIR}" && ansible-playbook -i inventory.ini site.yml )
+( cd "${ANSIBLE_DIR}" && ansible-playbook -i inventory.ini \
+  -e "control_public_ip=${CONTROL_PUBLIC_IP}" \
+  -e "control_private_ip=${CONTROL_PRIVATE_IP}" \
+  -e "target_public_ip=${TARGET_PUBLIC_IP}" \
+  -e "vault_password=${VAULT_PASSWORD}" \
+  -e "rh_registry_username=${RH_REGISTRY_USERNAME}" \
+  -e "rh_registry_password=${RH_REGISTRY_PASSWORD}" \
+  -e "lab_user_password=${LAB_USER_PASSWORD}" \
+  -e "aap_admin_password=${AAP_ADMIN_PASSWORD}" \
+  -e "mm_admin_password=${LAB_USER_PASSWORD}" \
+  site.yml )
 
 # --- 13. summary (no secrets) -----------------------------------------------
 cat <<EOF

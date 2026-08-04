@@ -52,33 +52,32 @@ _read_plain() {
 }
 
 collect_secrets() {
-  printf '\n== Red Hat subscription (input hidden where sensitive) ==\n' > /dev/tty
-  printf '  [1] Activation key + organization ID (recommended)\n' > /dev/tty
-  printf '  [2] Username + password\n' > /dev/tty
-  local method
-  printf 'Choose 1 or 2 [1]: ' > /dev/tty
-  IFS= read -r method < /dev/tty
-  if [[ "${method}" == "2" ]]; then
-    _read_plain  "  RHSM username" RHSM_USERNAME
-    _read_secret "  RHSM password" RHSM_PASSWORD 1 0
-  else
-    _read_plain  "  RHSM organization ID" RHSM_ORG_ID
-    _read_secret "  RHSM activation key" RHSM_ACTIVATION_KEY 1 0
+  printf '\n== Red Hat credentials (registry.redhat.io + RHSM) ==\n' > /dev/tty
+  printf '   (Same credentials used for both RHSM and container registry)\n' > /dev/tty
+  _read_plain  "  Red Hat username" RHSM_USERNAME
+  export RH_REGISTRY_USERNAME="${RHSM_USERNAME}"
+  _read_secret "  Red Hat password" RHSM_PASSWORD 1 0
+  export RH_REGISTRY_PASSWORD="${RHSM_PASSWORD}"
+
+  printf '\n== Application passwords ==\n' > /dev/tty
+  printf '   lab-user: redhat (default — no prompt)\n' > /dev/tty
+  printf '   AAP admin: redhat (default — no prompt)\n' > /dev/tty
+  export LAB_USER_PASSWORD="redhat"
+  export AAP_ADMIN_PASSWORD="redhat"
+
+  printf '\n== Ansible Vault (for encrypting sensitive vars) ==\n' > /dev/tty
+  printf '   Enter vault password (or press Enter to auto-generate):\n' > /dev/tty
+  _read_secret "  Vault password" VAULT_PASSWORD 0 0
+  if [[ -z "${VAULT_PASSWORD}" ]]; then
+    VAULT_PASSWORD="$(openssl rand -base64 32)"
+    printf '   Auto-generated vault password (save this if you need to re-run):\n   %s\n' "${VAULT_PASSWORD}" > /dev/tty
   fi
-
-  printf '\n-- registry.redhat.io service account (needed for AAP images) --\n' > /dev/tty
-  printf '   Leave blank if you set aap_install_enabled=false.\n' > /dev/tty
-  _read_plain  "  Registry service-account username" RH_REGISTRY_USERNAME
-  _read_secret "  Registry service-account password" RH_REGISTRY_PASSWORD 0 0
-
-  printf '\n== Application passwords (hidden, entered twice) ==\n' > /dev/tty
-  _read_secret "  lab-user password (UI + console logins)" LAB_USER_PASSWORD 1 1 "redhat"
-  _read_secret "  AAP admin password" AAP_ADMIN_PASSWORD 1 1 "redhat"
+  export VAULT_PASSWORD
 
   printf '\n== AI services (optional — leave blank to wire up later) ==\n' > /dev/tty
   _read_secret "  Ansible Lightspeed API key" LIGHTSPEED_API_KEY 0 0
   _read_plain  "  Red Hat AI model endpoint URL" AI_MODEL_ENDPOINT
   _read_secret "  Red Hat AI model API key" AI_MODEL_API_KEY 0 0
 
-  printf '\nSecrets are held in this process environment only — not written to disk.\n' > /dev/tty
+  printf '\nSecrets are held in this process environment only — vault file will be encrypted.\n' > /dev/tty
 }

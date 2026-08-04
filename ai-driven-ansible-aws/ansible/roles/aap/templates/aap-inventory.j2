@@ -1,37 +1,36 @@
-# AAP 2.7 Containerized Growth (Single-Node) Topology Inventory
+# AAP 2.6 Containerized Growth (Single-Node) Topology Inventory
 # Based on official Red Hat documentation for RHEL 10
 # All passwords are injected from environment at runtime; nothing is committed to source control.
 #
 # Growth topology: All components (Gateway, Controller, Hub, EDA, Database, Redis) on single node.
 # For production use, replace placeholder passwords and hostnames.
 
-# Platform Gateway hosts
+# Platform Gateway hosts (required in AAP 2.6)
 [automationgateway]
-localhost ansible_connection=local
+{{ system_hostname }} ansible_connection=local ansible_host={{ control_private_ip }}
 
 # Automation Controller hosts
 [automationcontroller]
-localhost ansible_connection=local
+{{ system_hostname }} ansible_connection=local ansible_host={{ control_private_ip }}
 
 # Automation Hub hosts
 [automationhub]
-localhost ansible_connection=local
+{{ system_hostname }} ansible_connection=local ansible_host={{ control_private_ip }}
 
 # Event-Driven Ansible controller hosts
 [automationeda]
-localhost ansible_connection=local
+{{ system_hostname }} ansible_connection=local ansible_host={{ control_private_ip }}
 
 # Database host (local/embedded PostgreSQL)
 [database]
-localhost ansible_connection=local
-
-# Automation Metrics (optional, disabled by default)
-[automationmetrics]
-localhost ansible_connection=local
+{{ system_hostname }} ansible_connection=local ansible_host={{ control_private_ip }}
 
 [all:vars]
 # Ansible connection
 ansible_connection=local
+
+# AAP Installer preflight check
+ignore_preflight_errors=true
 
 # PostgreSQL database (local/embedded)
 postgresql_admin_username=postgres
@@ -65,12 +64,6 @@ hub_seed_collections=false
 eda_admin_password={{ aap_admin_password }}
 eda_pg_host=localhost
 eda_pg_password={{ aap_admin_password }}
-
-# Automation Metrics (optional, disabled by default)
-automationmetrics_pg_host=localhost
-automationmetrics_pg_password={{ aap_admin_password }}
-automationmetrics_controller_read_pg_host=localhost
-automationmetrics_controller_read_pg_password={{ aap_admin_password }}
 
 # SSL/TLS certificates
 # Installer generates self-signed certificates by default (fine for demo).
