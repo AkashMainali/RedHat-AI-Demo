@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# Remediation step 4 - create the job template that applies the AI's fix.
+#
+# The playbook now exists in Git and has been synced into the
+# Lightspeed-Playbooks project. This step wraps it in a launchable job template
+# with ask_limit_on_launch, so applying the fix is a deliberate, scoped action -
+# the natural place to insert a change window or approval gate.
+#
+# Adapted from ansible-tmm/aiops-summitlab
+# (httpd_remediation_job_template.yml).
+# =============================================================================
+- name: Create the remediation job template
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Create the remediation execution job template
+      ansible.controller.job_template:
+        name: "{{ remediation_jt_name }}"
+        job_type: run
+        organization: "{{ demo_organization | default('Default') }}"
+        inventory: "{{ demo_inventory | default('lab-inventory') }}"
+        project: "{{ demo_playbook_project | default('Lightspeed-Playbooks') }}"
+        playbook: "{{ gitea_playbook_file | default('lightspeed-response.yml') }}"
+        credentials:
+          - "{{ demo_machine_credential | default('lab-credential') }}"
+        execution_environment: "{{ demo_execution_environment | default('Default execution environment') }}"
+        become_enabled: true
+        ask_limit_on_launch: true
+        description: >-
+          Applies the AI-generated remediation playbook. Launched manually with
+          a limit so the operator controls blast radius.
+        state: present
+        validate_certs: false
+
+    - name: Report the next action
+      ansible.builtin.debug:
+        msg: >-
+          Job template "{{ remediation_jt_name }}" is ready. Launch it with a
+          limit of the target host to apply the AI-generated fix.

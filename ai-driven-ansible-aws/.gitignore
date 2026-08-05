@@ -25,6 +25,11 @@ ansible/inventory.ini
 ansible/.known_hosts
 ansible/*.retry
 ansible/collections/
+# Extracted from the AAP setup bundle by bootstrap.sh (large, reproducible).
+ansible/.aap-collections/
+
+# --- AAP setup bundle (multi-MB, download it yourself) ---
+ansible/aap/*.tar.gz
 
 # --- OS ---
 .DS_Store

@@ -1,0 +1,205 @@
+---
+# =============================================================================
+# Populate Gitea: two repositories, a scoped API token, and the demo content.
+#
+#   <demo_content_repo>   the playbooks + rulebook, source for the AAP projects
+#   <demo_playbook_repo>  where AI-generated fixes get committed at demo time
+#
+# All calls go to Gitea on the control node's loopback interface, so the token
+# never crosses the network. Every task is idempotent and no_log where a
+# credential is in play.
+# =============================================================================
+- name: Set the Gitea API base URL (loopback on the control node)
+  ansible.builtin.set_fact:
+    _gitea_api: "http://127.0.0.1:{{ gitea_http_port }}"
+
+- name: Wait for the Gitea API
+  ansible.builtin.uri:
+    url: "{{ _gitea_api }}/api/v1/version"
+    status_code: 200
+  register: _gitea_ready
+  retries: 30
+  delay: 5
+  until: _gitea_ready is succeeded
+
+# --- repositories -----------------------------------------------------------
+- name: Create the demo repositories
+  ansible.builtin.uri:
+    url: "{{ _gitea_api }}/api/v1/user/repos"
+    method: POST
+    user: "{{ gitea_admin_user }}"
+    password: "{{ gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      description: "{{ item.description }}"
+      private: false
+      auto_init: true
+      default_branch: "{{ gitea_branch }}"
+    status_code: [201, 409]
+  loop:
+    - name: "{{ demo_content_repo }}"
+      description: "AI-driven Ansible automation demo content (playbooks + EDA rulebook)"
+    - name: "{{ demo_playbook_repo }}"
+      description: "AI-generated remediation playbooks, committed at demo time"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+# --- API token --------------------------------------------------------------
+# Recreated every run so the token we hand to AAP is always one we know.
+- name: Remove any previous demo token
+  ansible.builtin.uri:
+    url: "{{ _gitea_api }}/api/v1/users/{{ gitea_admin_user }}/tokens/{{ gitea_token_name }}"
+    method: DELETE
+    user: "{{ gitea_admin_user }}"
+    password: "{{ gitea_admin_password }}"
+    force_basic_auth: true
+    status_code: [204, 404]
+  no_log: true
+
+- name: Mint a scoped Gitea API token for AAP
+  ansible.builtin.uri:
+    url: "{{ _gitea_api }}/api/v1/users/{{ gitea_admin_user }}/tokens"
+    method: POST
+    user: "{{ gitea_admin_user }}"
+    password: "{{ gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ gitea_token_name }}"
+      scopes:
+        - "write:repository"
+    status_code: 201
+  register: _gitea_token_result
+  no_log: true
+
+- name: Hold the token for the AAP credential tasks
+  ansible.builtin.set_fact:
+    gitea_api_token: "{{ _gitea_token_result.json.sha1 }}"
+  no_log: true
+
+# --- push the demo content --------------------------------------------------
+- name: Enumerate the demo content to publish
+  ansible.builtin.find:
+    paths: "{{ role_path }}/files/repo"
+    recurse: true
+    file_type: file
+  delegate_to: localhost
+  become: false
+  register: _repo_files
+
+- name: Read the current state of each file in Gitea
+  ansible.builtin.uri:
+    url: >-
+      {{ _gitea_api }}/api/v1/repos/{{ gitea_admin_user }}/{{ demo_content_repo
+      }}/contents/{{ item.path | relpath(role_path ~ '/files/repo') }}
+    method: GET
+    headers:
+      Authorization: "token {{ gitea_api_token }}"
+    status_code: [200, 404]
+  loop: "{{ _repo_files.files }}"
+  loop_control:
+    label: "{{ item.path | relpath(role_path ~ '/files/repo') }}"
+  register: _existing_files
+  no_log: true
+
+- name: Publish new files
+  ansible.builtin.uri:
+    url: >-
+      {{ _gitea_api }}/api/v1/repos/{{ gitea_admin_user }}/{{ demo_content_repo
+      }}/contents/{{ item.item.path | relpath(role_path ~ '/files/repo') }}
+    method: POST
+    headers:
+      Authorization: "token {{ gitea_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      message: "Add {{ item.item.path | relpath(role_path ~ '/files/repo') }} (managed by IaC)"
+      content: "{{ lookup('ansible.builtin.file', item.item.path) | b64encode }}"
+      branch: "{{ gitea_branch }}"
+    status_code: [201]
+  loop: "{{ _existing_files.results }}"
+  loop_control:
+    label: "{{ item.item.path | relpath(role_path ~ '/files/repo') }}"
+  when: item.status == 404
+  no_log: true
+
+- name: Update changed files
+  ansible.builtin.uri:
+    url: >-
+      {{ _gitea_api }}/api/v1/repos/{{ gitea_admin_user }}/{{ demo_content_repo
+      }}/contents/{{ item.item.path | relpath(role_path ~ '/files/repo') }}
+    method: PUT
+    headers:
+      Authorization: "token {{ gitea_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      message: "Update {{ item.item.path | relpath(role_path ~ '/files/repo') }} (managed by IaC)"
+      content: "{{ lookup('ansible.builtin.file', item.item.path) | b64encode }}"
+      sha: "{{ item.json.sha }}"
+      branch: "{{ gitea_branch }}"
+    status_code: [200]
+  loop: "{{ _existing_files.results }}"
+  loop_control:
+    label: "{{ item.item.path | relpath(role_path ~ '/files/repo') }}"
+  when:
+    - item.status == 200
+    - (lookup('ansible.builtin.file', item.item.path) | b64encode) != (item.json.content | default('') | regex_replace('\s', ''))
+  no_log: true
+
+# --- placeholder so the Lightspeed project can sync before any AI run -------
+- name: Check for the generated-playbook placeholder
+  ansible.builtin.uri:
+    url: >-
+      {{ _gitea_api }}/api/v1/repos/{{ gitea_admin_user }}/{{ demo_playbook_repo
+      }}/contents/{{ demo_generated_playbook_file }}
+    method: GET
+    headers:
+      Authorization: "token {{ gitea_api_token }}"
+    status_code: [200, 404]
+  register: _placeholder
+  no_log: true
+
+- name: Seed the generated-playbook placeholder
+  # Without this the Lightspeed-Playbooks project has no playbook to offer and
+  # the remediation job template cannot be created before the first AI run.
+  ansible.builtin.uri:
+    url: >-
+      {{ _gitea_api }}/api/v1/repos/{{ gitea_admin_user }}/{{ demo_playbook_repo
+      }}/contents/{{ demo_generated_playbook_file }}
+    method: POST
+    headers:
+      Authorization: "token {{ gitea_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      message: "Seed placeholder for AI-generated remediation"
+      branch: "{{ gitea_branch }}"
+      content: "{{ _seed_content | b64encode }}"
+    status_code: [201]
+  vars:
+    _seed_content: |
+      ---
+      # Placeholder. Replaced at demo time by the AI-generated remediation
+      # playbook committed by the "Commit Fix to Gitea" job template.
+      - name: Placeholder - awaiting AI-generated remediation
+        hosts: all
+        gather_facts: false
+        tasks:
+          - name: Explain that no remediation has been generated yet
+            ansible.builtin.debug:
+              msg: >-
+                No AI-generated remediation exists yet. Run the enrichment and
+                remediation workflows first.
+  when: _placeholder.status == 404
+  no_log: true
+
+- name: Report the Gitea state
+  ansible.builtin.debug:
+    msg:
+      - "Gitea content repo : {{ gitea_url_external }}/{{ gitea_admin_user }}/{{ demo_content_repo }}"
+      - "Gitea fixes repo   : {{ gitea_url_external }}/{{ gitea_admin_user }}/{{ demo_playbook_repo }}"
+      - "Published {{ _repo_files.files | length }} demo content files."

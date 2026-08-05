@@ -1,4 +1,14 @@
 ---
+# =============================================================================
+# Mattermost - the demo's chat / ITSM stand-in.
+#
+# The one subtlety: Mattermost 9+ ships with TeamSettings.EnableOpenServer set to
+# FALSE, so the unauthenticated "create the first user" API call is rejected with
+# api.user.create_user.no_open_server. Fixing that through the API would be
+# circular (it needs an admin account), so the setting is applied through MM_*
+# environment variables in the Quadlet unit and the container is restarted before
+# we try to create anyone.
+# =============================================================================
 - name: Deploy the Mattermost quadlet unit
   ansible.builtin.template:
     src: mattermost.container.j2
@@ -17,6 +27,11 @@
     name: mattermost.service
     state: started
 
+- name: Apply any configuration change before continuing
+  # Handlers normally run at the end of the play, which would be far too late:
+  # the tasks below depend on the configuration this unit file carries.
+  ansible.builtin.meta: flush_handlers
+
 - name: Open the Mattermost port in firewalld
   ansible.posix.firewalld:
     port: "{{ mattermost_port }}/tcp"
@@ -33,7 +48,7 @@
   delay: 5
   until: mm_up is succeeded
 
-- name: Create the initial Mattermost admin user (first-user bootstrap, idempotent)
+- name: Create the initial Mattermost admin user (first user becomes system admin)
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ mattermost_port }}/api/v4/users"
     method: POST
@@ -42,5 +57,106 @@
       email: "{{ mattermost_admin_email }}"
       username: "{{ mattermost_admin_user }}"
       password: "{{ mm_admin_password }}"
-    status_code: [201, 400]
+    # 201 created; 400 already exists (idempotent re-run); 403 signups closed,
+    # which is only acceptable if the account is already there - verified below.
+    status_code: [201, 400, 403]
+  register: mm_user_create
   no_log: true
+
+- name: Verify the admin account works
+  # The real assertion. Whatever the create call returned, the demo only works if
+  # we can authenticate as this user - demo_content logs in as it to create the
+  # team and webhook, and that requires system admin.
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mattermost_port }}/api/v4/users/login"
+    method: POST
+    body_format: json
+    body:
+      login_id: "{{ mattermost_admin_user }}"
+      password: "{{ mm_admin_password }}"
+    status_code: 200
+  register: mm_login_check
+  retries: 6
+  delay: 5
+  # Must test the status explicitly, NOT 'is succeeded': failed_when: false means
+  # the task never reports failure, so 'is succeeded' would be true on the first
+  # attempt and the retries would never fire.
+  until: mm_login_check.status | default(0) == 200
+  failed_when: false
+  no_log: true
+
+- name: Extract the Mattermost session token
+  # Mattermost returns the session token in a response HEADER, not the body. The
+  # uri module exposes headers as lowercased keys with dashes turned into
+  # underscores, and the header name has differed across versions ('Token' in
+  # current releases, 'X-Auth-Token' historically) - so try both rather than
+  # guessing one.
+  ansible.builtin.set_fact:
+    mm_admin_token: >-
+      {{ mm_login_check.token
+         | default(mm_login_check.x_auth_token | default('', true), true) }}
+  when: mm_login_check.status | default(0) == 200
+  no_log: true
+
+- name: Explain clearly if the admin account could not be established
+  ansible.builtin.fail:
+    msg: >-
+      Could not create or authenticate the Mattermost admin
+      '{{ mattermost_admin_user }}'. The create call returned HTTP
+      {{ mm_user_create.status | default('n/a') }} and login returned
+      {{ mm_login_check.status | default('n/a') }}.
+      {% if mm_user_create.status | default(0) == 403 %}
+      Mattermost rejected the signup (EnableOpenServer). The Quadlet unit sets
+      MM_TEAMSETTINGS_ENABLEOPENSERVER, so the container is probably running with
+      stale configuration - on the control node run:
+      systemctl restart mattermost, then re-run this play. If the container
+      predates this change, remove it first:
+      podman rm -f mattermost.
+      {% else %}
+      Check 'podman logs mattermost' on the control node. A password policy
+      rejection or a half-initialised database are the usual causes; removing the
+      container with 'podman rm -f mattermost' and re-running gives a clean start.
+      {% endif %}
+  when: mm_login_check.status | default(0) != 200
+
+- name: Fail if login succeeded but returned no session token
+  ansible.builtin.fail:
+    msg: >-
+      Logged in to Mattermost as '{{ mattermost_admin_user }}' but the response
+      carried no session token in either the 'Token' or 'X-Auth-Token' header.
+      This usually means a proxy stripped the header, or the Mattermost version
+      changed where the token is returned. Check with:
+      curl -i -X POST http://127.0.0.1:{{ mattermost_port }}/api/v4/users/login
+      -d '{"login_id":"{{ mattermost_admin_user }}","password":"..."}'
+      on the control node and look at the response headers.
+  when: mm_admin_token | default('') | length == 0
+
+- name: Confirm the admin has system-admin rights
+  # The first account created on a fresh Mattermost is granted system_admin
+  # automatically. demo_content needs that to create teams and webhooks, so
+  # surface a missing role here rather than three tasks later.
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mattermost_port }}/api/v4/users/me"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ mm_admin_token }}"
+    status_code: 200
+  register: mm_me
+  no_log: true
+
+- name: Warn if the admin lacks system-admin rights
+  ansible.builtin.debug:
+    msg: >-
+      WARNING - '{{ mattermost_admin_user }}' does not hold system_admin
+      (roles: {{ mm_me.json.roles | default('unknown') }}). It was probably not
+      the first account on this server. Team and webhook creation will fail.
+      Remove the container and its volume for a clean start:
+      podman rm -f mattermost.
+  when: "'system_admin' not in (mm_me.json.roles | default(''))"
+
+- name: Report the Mattermost state
+  ansible.builtin.debug:
+    msg: >-
+      Mattermost ready at http://{{ control_public_ip }}:{{ mattermost_port }}
+      as '{{ mattermost_admin_user }}'
+      (roles: {{ mm_me.json.roles | default('unknown') }}).

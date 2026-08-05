@@ -1,0 +1,29 @@
+# Managed by Ansible - Ollama (CPU inference) as a Quadlet unit.
+#
+# Stands in for RHEL AI / Red Hat AI Inference Server in this demo. Ollama
+# exposes an OpenAI-compatible API at /v1, so every playbook that talks to it
+# is portable to vLLM, RHEL AI, OpenShift AI or Red Hat MaaS without change -
+# only the endpoint URL and model id move.
+[Unit]
+Description=Ollama (OpenAI-compatible inference endpoint)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image={{ ollama_image }}
+ContainerName=ollama
+Network=aiops
+PublishPort={{ ollama_port }}:11434
+Volume=ollama-models:/root/.ollama
+Environment=OLLAMA_HOST=0.0.0.0:11434
+# Keep the model resident so demo inference is not paying cold-start each call.
+Environment=OLLAMA_KEEP_ALIVE=-1
+Environment=OLLAMA_NUM_PARALLEL=1
+Environment=OLLAMA_MAX_LOADED_MODELS=1
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target default.target

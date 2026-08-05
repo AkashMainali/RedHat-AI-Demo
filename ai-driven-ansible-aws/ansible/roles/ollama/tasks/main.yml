@@ -1,0 +1,86 @@
+---
+# =============================================================================
+# Ollama - the AI inference endpoint for the demo.
+#
+# Provides an OpenAI-compatible /v1 API on the control node so the demo's
+# "Red Hat AI" job templates have something to talk to without a GPU node.
+# Swap ai_model_url in group_vars/all.yml to point at RHEL AI, OpenShift AI
+# Model Serving, or Red Hat MaaS instead - no playbook changes required.
+# =============================================================================
+- name: Deploy the Ollama quadlet unit
+  ansible.builtin.template:
+    src: ollama.container.j2
+    dest: /etc/containers/systemd/ollama.container
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd and restart ollama
+
+- name: Reload systemd so the generated Ollama service exists
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Start Ollama
+  ansible.builtin.systemd:
+    name: ollama.service
+    state: started
+
+- name: Open the Ollama port in firewalld
+  # Rootless AAP execution environments reach this over the host's private IP,
+  # so the host firewall applies even though the traffic never leaves the node.
+  ansible.posix.firewalld:
+    port: "{{ ollama_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+
+- name: Wait for the Ollama API to respond
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ollama_port }}/api/version"
+    status_code: 200
+  register: ollama_up
+  retries: 40
+  delay: 5
+  until: ollama_up is succeeded
+
+- name: Check whether the demo model is already pulled
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ollama_port }}/api/tags"
+    method: GET
+    status_code: 200
+  register: ollama_tags
+
+- name: Pull the demo model (several GB - first run takes a few minutes)
+  ansible.builtin.command:
+    cmd: "podman exec ollama ollama pull {{ ollama_model }}"
+  when: >-
+    ollama_model not in (
+      ollama_tags.json.models | default([]) | map(attribute='name') | list
+    )
+  changed_when: true
+  timeout: 1800
+
+- name: Warm the model so the first demo inference is not a cold start
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ ollama_port }}/v1/chat/completions"
+    method: POST
+    body_format: json
+    body:
+      model: "{{ ollama_model }}"
+      messages:
+        - role: user
+          content: "Reply with the single word: ready"
+      max_tokens: 5
+      temperature: 0
+    status_code: 200
+    timeout: 300
+  register: ollama_warm
+  retries: 3
+  delay: 10
+  until: ollama_warm is succeeded
+
+- name: Report the inference endpoint
+  ansible.builtin.debug:
+    msg: >-
+      Ollama ready at http://{{ control_private_ip }}:{{ ollama_port }}/v1
+      serving model '{{ ollama_model }}'.

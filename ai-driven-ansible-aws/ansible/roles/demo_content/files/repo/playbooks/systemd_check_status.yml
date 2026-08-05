@@ -1,0 +1,83 @@
+---
+# =============================================================================
+# Enrichment step 1 - gather incident context.
+#
+# Runs against the failing host, collects journal output, and hands three
+# artifacts to the rest of the workflow via set_stats:
+#   incident_summary - human-readable text for the chat/ITSM notification
+#   fix_prompt       - short prompt asking the model for a one-line fix
+#   rca_prompt       - longer prompt asking the model for a root cause analysis
+#
+# Adapted from ansible-tmm/aiops-summitlab (systemd_check_status.yml).
+# =============================================================================
+- name: Retrieve incident context for the AI
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Resolve which service we are investigating
+      ansible.builtin.set_fact:
+        linux_service: "{{ input_linux_service | default('httpd') }}"
+
+    - name: Check the service state
+      ansible.builtin.systemd_service:
+        name: "{{ linux_service }}"
+        state: started
+      check_mode: true
+      register: service_status
+
+    - name: Stop early if the service is healthy
+      # check_mode reports "changed" only when it WOULD have had to start the
+      # service - i.e. it is currently down. A healthy service means there is
+      # no incident and the rest of the workflow should not run.
+      ansible.builtin.fail:
+        msg: >-
+          The {{ linux_service }} service is already running correctly
+          (state: {{ service_status.status.ActiveState | default('unknown') }}).
+          No troubleshooting needed.
+      when: not service_status.changed
+
+    - name: Collect the recent journal entries for the service
+      ansible.builtin.command:
+        cmd: "journalctl -u {{ linux_service }}.service -n 20 --no-pager"
+      register: systemd_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Store the log output
+      ansible.builtin.set_fact:
+        systemd_log_output: "{{ systemd_logs.stdout | default('no log output captured') }}"
+
+    - name: Show what we collected
+      ansible.builtin.debug:
+        var: systemd_log_output
+
+    - name: Publish artifacts for the downstream workflow nodes
+      ansible.builtin.set_stats:
+        data:
+          incident_service: "{{ linux_service }}"
+          incident_host: "{{ inventory_hostname }}"
+          incident_summary: |
+            We have an issue on our Red Hat Enterprise Linux server with the {{ linux_service }} service.
+
+            The {{ linux_service }} service will not start on {{ inventory_hostname }}.
+
+            Recent error logs:
+            {{ systemd_log_output }}
+          fix_prompt: >-
+            A system service is failing on host {{ inventory_hostname }}.
+            Based on the logs below, provide a single concise fix instruction
+            of one or two lines. Describe the change to make and state that the
+            {{ linux_service }} service must be restarted. Do not include code.
+
+            Logs:
+            {{ systemd_log_output }}
+          rca_prompt: >-
+            A system service is failing on host {{ inventory_hostname }}.
+            Analyse the logs below and write a detailed Root Cause Analysis
+            covering: what failed, the specific cause, and the corrective
+            action. Keep it under 250 words.
+
+            Logs:
+            {{ systemd_log_output }}

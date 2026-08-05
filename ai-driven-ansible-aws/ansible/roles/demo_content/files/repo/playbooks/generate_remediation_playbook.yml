@@ -1,0 +1,171 @@
+---
+# =============================================================================
+# Remediation step 1 - generate the fix as an Ansible Playbook.
+#
+# In the Red Hat Demo Platform lab this calls the hosted Ansible Lightspeed
+# playbook-generation API (c.ai.ansible.redhat.com), which requires a Lightspeed
+# / watsonx Code Assistant seat entitlement. This environment instead points the
+# same step at the model endpoint already deployed for the demo, so the
+# narrative is identical - "AI wrote the fix" - with no external entitlement.
+#
+# To switch to the real Lightspeed service, set lightspeed_mode: saas and supply
+# lightspeed_api_url + lightspeed_api_token. Both paths publish the same
+# generated_playbook artifact, so nothing downstream changes.
+#
+# Adapted from ansible-tmm/aiops-summitlab (lightspeed_generate.yml).
+# =============================================================================
+- name: Generate a remediation playbook from the reviewed prompt
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    _mode: "{{ lightspeed_mode | default('local') }}"
+    _endpoint: "{{ ai_model_url | default('') | regex_replace('/$', '') }}"
+    _model: "{{ ai_model_id | default('granite3.1-dense:2b') }}"
+    # Set to true only if you need a guaranteed-green live demo. When the model
+    # returns YAML that will not parse, the run substitutes a known-good
+    # playbook instead of failing. Off by default so failures stay visible.
+    _allow_fallback: "{{ allow_fallback_playbook | default(false) | bool }}"
+    _fallback_playbook: |
+      - name: Fix httpd
+        hosts: all
+        become: true
+        tasks:
+          - name: Remove the line containing InvalidDirectiveHere
+            ansible.builtin.lineinfile:
+              path: /etc/httpd/conf/httpd.conf
+              regexp: ^InvalidDirectiveHere
+              state: absent
+
+          - name: Restart httpd
+            ansible.builtin.service:
+              name: httpd
+              state: restarted
+
+  tasks:
+    - name: Validate the prompt was supplied
+      ansible.builtin.assert:
+        that:
+          - lightspeed_prompt | default('') | length > 0
+        fail_msg: >-
+          No prompt supplied. Launch the Remediation Workflow and complete the
+          survey, which provides lightspeed_prompt.
+        quiet: true
+
+    - name: Show the prompt being used
+      ansible.builtin.debug:
+        msg: "Generating a playbook from: {{ lightspeed_prompt }}"
+
+    # -- Path A: the hosted Ansible Lightspeed service --------------------
+    - name: Request a playbook from Ansible Lightspeed
+      ansible.builtin.uri:
+        url: "{{ lightspeed_api_url | default('https://c.ai.ansible.redhat.com/api/v0/ai/generations/') }}"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+          Authorization: "Bearer {{ lightspeed_api_token | default('') }}"
+        body_format: json
+        body:
+          text: "{{ lightspeed_prompt }}"
+        status_code: 200
+        timeout: 120
+      register: saas_response
+      when: _mode == 'saas'
+      no_log: true
+
+    # -- Path B: the model endpoint deployed with this demo ---------------
+    - name: Request a playbook from the model endpoint
+      ansible.builtin.uri:
+        url: "{{ _endpoint }}/chat/completions"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+          Authorization: "Bearer {{ ai_model_api_key | default('not-required') }}"
+        body_format: json
+        body:
+          model: "{{ _model }}"
+          messages:
+            - role: system
+              content: >-
+                You generate Ansible Playbooks. Output ONLY valid YAML: a
+                top-level list of one play. No prose, no explanation, no
+                markdown code fences. Use fully qualified collection names from
+                ansible.builtin only. Always set "hosts: all" and
+                "become: true".
+            - role: user
+              content: >-
+                Write an Ansible Playbook for this task: {{ lightspeed_prompt }}
+
+                Respond with YAML only, starting with a hyphen.
+          max_tokens: "{{ codegen_max_tokens | default(700) | int }}"
+          temperature: 0
+        status_code: 200
+        timeout: "{{ ai_request_timeout | default(600) | int }}"
+      register: local_response
+      when: _mode != 'saas'
+      retries: 3
+      delay: 15
+      until: local_response is succeeded
+
+    - name: Extract the raw generated text
+      ansible.builtin.set_fact:
+        _raw_playbook: >-
+          {{
+            saas_response.json.playbook
+            if _mode == 'saas'
+            else local_response.json.choices[0].message.content
+          }}
+
+    - name: Strip markdown fences and leading prose the model may have added
+      ansible.builtin.set_fact:
+        _clean_playbook: >-
+          {{ _raw_playbook
+             | regex_replace('(?s)^.*?```(?:ya?ml)?\\s*', '')
+             | regex_replace('(?s)```.*$', '')
+             | trim
+             if '```' in _raw_playbook
+             else _raw_playbook | trim }}
+
+    - name: Show the candidate playbook
+      ansible.builtin.debug:
+        msg: "{{ _clean_playbook.split('\n') }}"
+
+    - name: Try to parse the generated YAML
+      ansible.builtin.set_fact:
+        _parsed: "{{ _clean_playbook | from_yaml }}"
+      register: parse_attempt
+      failed_when: false
+
+    - name: Decide whether the generated playbook is usable
+      ansible.builtin.set_fact:
+        _usable: >-
+          {{ (parse_attempt is not failed)
+             and (_parsed is defined)
+             and (_parsed is iterable)
+             and (_parsed is not string)
+             and (_parsed | length > 0)
+             and (_parsed[0].tasks is defined) }}
+
+    - name: Fail if the model produced unusable YAML
+      ansible.builtin.fail:
+        msg: >-
+          The model returned content that is not a valid Ansible Playbook.
+          Refine the prompt and relaunch, or set allow_fallback_playbook=true
+          to substitute a known-good playbook. Raw output was logged above.
+      when:
+        - not _usable | bool
+        - not _allow_fallback | bool
+
+    - name: Substitute the known-good playbook (fallback explicitly enabled)
+      ansible.builtin.set_fact:
+        _clean_playbook: "{{ _fallback_playbook }}"
+      when:
+        - not _usable | bool
+        - _allow_fallback | bool
+
+    - name: Publish the generated playbook for the commit step
+      ansible.builtin.set_stats:
+        data:
+          generated_playbook: "{{ _clean_playbook }}"
+          generated_by: "{{ 'Ansible Lightspeed' if _mode == 'saas' else 'model endpoint (' ~ _model ~ ')' }}"

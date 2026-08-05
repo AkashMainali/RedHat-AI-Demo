@@ -26,10 +26,77 @@ aap_admin_password:   "{{ lookup('ansible.builtin.env', 'AAP_ADMIN_PASSWORD')   
 gitea_admin_password: "{{ lookup('ansible.builtin.env', 'GITEA_ADMIN_PASSWORD') | default(lab_user_password, true) }}"
 mm_admin_password:    "{{ lookup('ansible.builtin.env', 'MM_ADMIN_PASSWORD')    | default('ansibleredhat', true) }}"
 
-# --- AI / Lightspeed (external services the operator supplies) ---------------
+# --- AAP admin -------------------------------------------------------------
+aap_admin_user: admin
+
+# TWO addresses for the same API, and using the wrong one fails in a way that is
+# hard to diagnose:
+#
+#   aap_controller_host          PUBLIC. For calls made from the operator's
+#                                workstation - the config-as-code stage and the
+#                                subscription attach. Only your /32 can reach it.
+#
+#   aap_controller_host_internal PRIVATE. For anything running INSIDE the
+#                                environment: EDA's decision environment
+#                                containers and the AAP execution environments.
+#                                AWS does not route traffic to an instance's own
+#                                Elastic IP from within the VPC, so the public
+#                                address times out there - EDA reports
+#                                "Connection timeout to host .../api/v2/config/"
+#                                and the rulebook activation restarts forever.
+aap_controller_host: "https://{{ control_public_ip }}"
+aap_controller_host_internal: "https://{{ control_private_ip }}"
+
+# Where ansible-rulebook reaches the controller. Left empty on purpose: the
+# demo_content role probes the control node for a URL that actually serves
+# /api/v2/config/ and sets this at run time.
+#
+# It cannot be the gateway address. ansible-rulebook requests
+# {host}/api/v2/config/ with an absolute path, and the AAP 2.5+ gateway serves the
+# controller under /api/controller/v2/ - so the gateway returns 404 and the
+# activation restart-loops. The containerized controller has its own listener
+# (normally :8443), which is what discovery finds.
+#
+# Set this explicitly only to override discovery, e.g.
+#   eda_controller_url: "https://{{ control_private_ip }}:8443"
+eda_controller_url: ""
+
+# --- AI inference backend ----------------------------------------------------
+# ollama   = CPU inference on the control node (default). Costs nothing extra and
+#            keeps inference inside the VPC, but takes tens of seconds per call.
+# external = you supply AI_MODEL_ENDPOINT yourself - OpenShift AI Model Serving,
+#            RHEL AI, Red Hat AI Inference Server, or Red Hat MaaS. Setting
+#            AI_MODEL_ENDPOINT switches this automatically; the local Ollama role
+#            is then skipped entirely.
+ai_backend: >-
+  {{ 'external'
+     if (lookup('ansible.builtin.env', 'AI_MODEL_ENDPOINT') | default('', true) | length > 0)
+     else (lookup('ansible.builtin.env', 'AI_BACKEND') | default('ollama', true)) }}
+
+# --- Ollama (used when ai_backend is 'ollama') -------------------------------
+ollama_image: "docker.io/ollama/ollama:latest"
+ollama_port: 11434
+ollama_model: "granite3.1-dense:2b"
+
+# --- AI endpoint consumed by the demo playbooks ------------------------------
+# Every demo playbook speaks plain OpenAI /v1 chat completions, so pointing the
+# demo at a different serving stack is a variable change, not a code change:
+#   export AI_MODEL_ENDPOINT="https://<your-model-route>/v1"
+#   export AI_MODEL_ID="granite-3.1-8b-instruct"
+#   export AI_MODEL_API_KEY="<token>"
+ai_model_url: >-
+  {{ lookup('ansible.builtin.env', 'AI_MODEL_ENDPOINT')
+     | default('http://' ~ control_private_ip ~ ':' ~ ollama_port ~ '/v1', true) }}
+ai_model_id: >-
+  {{ lookup('ansible.builtin.env', 'AI_MODEL_ID') | default(ollama_model, true) }}
+ai_model_api_key: >-
+  {{ lookup('ansible.builtin.env', 'AI_MODEL_API_KEY') | default('not-required', true) }}
+
+# --- Ansible Lightspeed (optional) -------------------------------------------
+# lightspeed_mode defaults to 'local' in roles/demo_content/defaults/main.yml,
+# which reuses the endpoint above. Set to 'saas' and supply a token to call the
+# hosted playbook-generation service instead (needs a seat entitlement).
 lightspeed_api_key: "{{ lookup('ansible.builtin.env', 'LIGHTSPEED_API_KEY') | default('', true) }}"
-ai_model_endpoint:  "{{ lookup('ansible.builtin.env', 'AI_MODEL_ENDPOINT')  | default('', true) }}"
-ai_model_api_key:   "{{ lookup('ansible.builtin.env', 'AI_MODEL_API_KEY')   | default('', true) }}"
 
 # --- Kafka -------------------------------------------------------------------
 kafka_image:   "docker.io/apache/kafka:3.7.1"
@@ -42,6 +109,10 @@ gitea_http_port:  488   # host port -> container 3000 (HTTP in this build)
 gitea_admin_user: "{{ lab_user }}"
 gitea_admin_email: "lab-user@demo.local"
 gitea_repo_name:  "remediation"
+# Reached over the private IP by AAP's execution environments (same host) and
+# over the public IP by the operator's browser.
+gitea_url_internal: "http://{{ control_private_ip }}:{{ gitea_http_port }}"
+gitea_url_external: "http://{{ control_public_ip }}:{{ gitea_http_port }}"
 
 # --- Mattermost --------------------------------------------------------------
 mattermost_image: "docker.io/mattermost/mattermost-preview:latest"
@@ -49,6 +120,11 @@ mattermost_port:  8065
 mattermost_admin_user:  "ansibleadmin"
 mattermost_admin_email: "ansibleadmin@ansible.com"
 mattermost_team: "aiops"
+# Mattermost 9+ disables open signups by default, which blocks the
+# unauthenticated first-user bootstrap. Leaving it on also keeps re-runs simple.
+# Port 8065 is only reachable from your workstation's /32, so the exposure is
+# bounded - see docs/SECURITY.md.
+mattermost_allow_open_signup: true
 
 # --- Filebeat ----------------------------------------------------------------
 filebeat_major: "8"
@@ -63,9 +139,12 @@ aap_setup_package: "ansible-automation-platform-containerized-setup"
 aap_installer_playbook: "ansible.containerized_installer.install"
 aap_inventory_path: "/home/{{ lab_user }}/aap-containerized-inventory"
 
-# --- Demo content (AAP job templates / workflows / EDA rulebook) -------------
-# The upstream demo content (job templates, workflows, EDA rulebooks, and the
-# exact AI prompts) is NOT publicly published, so this is disabled by default
-# and shipped as documented hooks. See roles/demo_content/README.md.
-demo_content_enabled: false
-demo_content_git_url: ""   # e.g. your fork of the playbook/rulebook content
+# --- Demo content (Gitea repos + AAP/EDA config as code) ---------------------
+# Adapted from the public Red Hat Demo Platform lab ansible-tmm/aiops-summitlab.
+# Set to false to provision the infrastructure and platform only.
+demo_content_enabled: true
+
+# The target host as AAP will know it, and how AAP reaches it.
+demo_target_hostname: "target-node"
+demo_ssh_user: "{{ lookup('ansible.builtin.env', 'SSH_USER') | default('ec2-user', true) }}"
+demo_ssh_private_key_path: "{{ lookup('ansible.builtin.env', 'SSH_KEY_PATH') | default(lookup('ansible.builtin.env', 'HOME') ~ '/.ssh/aiops_ansible_demo', true) }}"

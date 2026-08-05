@@ -1,0 +1,67 @@
+---
+# =============================================================================
+# Demo trigger: break Apache.
+#
+# Inserts an invalid directive into httpd.conf and restarts the service. The
+# restart FAILS by design - that failure is what Filebeat ships to Kafka and
+# what EDA reacts to. Adapted from ansible-tmm/aiops-summitlab.
+# =============================================================================
+- name: Add a bad directive to the Apache configuration
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Ensure Apache is installed
+      ansible.builtin.dnf:
+        name: httpd
+        state: present
+
+    # The EDA trigger is the "caught SIGTERM, shutting down" line Apache writes
+    # to error_log when systemd stops a RUNNING process. If httpd is already
+    # down (a previous demo run was not reset) that line never appears and
+    # nothing triggers. So: clean the config, start it, then break it.
+    - name: Remove any leftover bad directive from a previous run
+      ansible.builtin.lineinfile:
+        path: /etc/httpd/conf/httpd.conf
+        regexp: '^InvalidDirectiveHere$'
+        state: absent
+
+    - name: Ensure Apache is running before we break it
+      ansible.builtin.systemd_service:
+        name: httpd
+        state: started
+        enabled: true
+
+    - name: Wait until Apache is actually serving
+      ansible.builtin.uri:
+        url: "http://127.0.0.1/"
+        status_code: 200
+      retries: 6
+      delay: 5
+      register: pre_check
+      until: pre_check is succeeded
+
+    - name: Insert the invalid directive
+      ansible.builtin.lineinfile:
+        path: /etc/httpd/conf/httpd.conf
+        insertafter: '^ServerRoot'
+        line: 'InvalidDirectiveHere'
+        state: present
+
+    # Restarting writes "caught SIGTERM, shutting down" to error_log, which is
+    # the string the EDA rulebook matches on. The subsequent start then fails
+    # on the bad directive. We tolerate the non-zero result deliberately.
+    - name: Restart Apache (expected to fail - this is the incident)
+      ansible.builtin.systemd_service:
+        name: httpd
+        state: restarted
+      register: httpd_restart
+      failed_when: false
+
+    - name: Show the outcome
+      ansible.builtin.debug:
+        msg: >-
+          httpd restart result: {{ 'FAILED as expected - incident created'
+          if httpd_restart is failed else httpd_restart.status.ActiveState
+          | default('unknown') }}

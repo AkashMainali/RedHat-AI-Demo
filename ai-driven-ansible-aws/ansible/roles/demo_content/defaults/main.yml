@@ -1,0 +1,70 @@
+---
+# =============================================================================
+# demo_content defaults - NON-SECRET naming and wiring only.
+#
+# Secrets (passwords, tokens) are resolved in group_vars/all.yml from the
+# environment. Nothing sensitive belongs in this file.
+# =============================================================================
+
+# --- AAP -------------------------------------------------------------------
+demo_organization: "Default"
+demo_inventory_name: "lab-inventory"
+demo_host_group: "webservers"
+demo_execution_environment: "Default execution environment"
+demo_machine_credential: "lab-credential"
+
+demo_project_name: "AI-EDA"
+demo_playbook_project_name: "Lightspeed-Playbooks"
+
+enrichment_workflow_name: "AI Insights and Lightspeed prompt generation"
+remediation_workflow_name: "Remediation Workflow"
+
+# --- Job template names ----------------------------------------------------
+# Match the Red Hat Demo Platform showroom modules verbatim, emoji included, so
+# the published lab instructions can be followed against this environment.
+# Defined once here and injected wherever needed - never retyped.
+jt_break_apache: "❌ Break Apache"
+jt_restore_apache: "✅ Restore Apache"
+jt_status_check: "⚙️ Apache Service Status Check"
+jt_ai_analyze: "🤖 RHEL AI: Analyze Incident"
+jt_notify_mattermost: "📣 Notify via Mattermost"
+jt_build_lightspeed: "⚙️ Build Ansible Lightspeed Job Template"
+jt_lightspeed_generate: "🧠 Lightspeed Remediation Playbook Generator"
+jt_commit_to_gitea: "🧾 Commit Fix to Gitea"
+jt_build_remediation: "⚙️ Build HTTPD Remediation Template"
+jt_execute_remediation: "🔧✅ Execute HTTPD Remediation"
+
+# Playbook generation path: 'local' reuses the demo's own model endpoint,
+# 'saas' calls the hosted Ansible Lightspeed API (needs a seat entitlement).
+lightspeed_mode: "local"
+
+# --- Gitea -----------------------------------------------------------------
+demo_content_repo: "aiops-demo"
+demo_playbook_repo: "lightspeed-playbooks"
+demo_generated_playbook_file: "lightspeed-response.yml"
+gitea_token_name: "aap-demo-token"
+gitea_branch: "main"
+
+# --- Mattermost ------------------------------------------------------------
+mattermost_team_display: "Automators"
+mattermost_team_slug: "automators"
+mattermost_channel: "town-square"
+mattermost_webhook_display: "AAP AIOps"
+
+# --- EDA -------------------------------------------------------------------
+eda_project_name: "AI-EDA Rulebooks"
+eda_activation_name: "Web App"
+eda_rulebook: "rulebooks/web_app.yml"
+eda_decision_environment: "Minimal Decision Environment"
+eda_aap_credential_name: "Demo AAP Connection"
+
+# --- AI --------------------------------------------------------------------
+ai_credential_name: "Demo AI Endpoint"
+gitea_credential_name: "Demo Gitea"
+mattermost_credential_name: "Demo Mattermost"
+aap_credential_name: "Demo AAP"
+scm_credential_name: "Demo Gitea SCM"
+
+# How long to wait for the AAP API to come up before giving up (seconds).
+aap_api_wait_retries: 60
+aap_api_wait_delay: 10

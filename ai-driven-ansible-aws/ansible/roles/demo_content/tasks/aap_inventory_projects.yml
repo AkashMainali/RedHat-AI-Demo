@@ -1,0 +1,74 @@
+---
+# =============================================================================
+# AAP inventory and projects as code.
+# =============================================================================
+
+- name: Create the demo inventory
+  ansible.controller.inventory:
+    name: "{{ demo_inventory_name }}"
+    organization: "{{ demo_organization }}"
+    description: "Hosts managed by the AI-driven Ansible automation demo"
+    state: present
+
+- name: Create the webservers group
+  ansible.controller.group:
+    name: "{{ demo_host_group }}"
+    inventory: "{{ demo_inventory_name }}"
+    state: present
+
+- name: Add the target host to the inventory
+  # Reached over the private IP: the AAP execution environments and the target
+  # share the VPC, so demo traffic never leaves it.
+  ansible.controller.host:
+    name: "{{ demo_target_hostname }}"
+    inventory: "{{ demo_inventory_name }}"
+    description: "RHEL webserver that fails and self-heals"
+    variables:
+      ansible_host: "{{ target_private_ip }}"
+      ansible_user: "{{ demo_ssh_user }}"
+    enabled: true
+    state: present
+
+- name: Put the target host in the webservers group
+  ansible.controller.group:
+    name: "{{ demo_host_group }}"
+    inventory: "{{ demo_inventory_name }}"
+    hosts:
+      - "{{ demo_target_hostname }}"
+    preserve_existing_hosts: true
+    state: present
+
+- name: Create the demo content project
+  ansible.controller.project:
+    name: "{{ demo_project_name }}"
+    organization: "{{ demo_organization }}"
+    description: "Playbooks and rulebooks for the AI-driven automation demo"
+    scm_type: git
+    scm_url: "{{ gitea_url_internal }}/{{ gitea_admin_user }}/{{ demo_content_repo }}.git"
+    scm_branch: "{{ gitea_branch }}"
+    credential: "{{ scm_credential_name }}"
+    scm_clean: true
+    scm_update_on_launch: true
+    scm_update_cache_timeout: 0
+    default_environment: "{{ demo_execution_environment }}"
+    wait: true
+    state: present
+
+- name: Create the generated-playbooks project
+  # update_on_launch plus the explicit Project Sync node in the remediation
+  # workflow guarantees AAP sees the AI's commit before it builds the job
+  # template that runs it.
+  ansible.controller.project:
+    name: "{{ demo_playbook_project_name }}"
+    organization: "{{ demo_organization }}"
+    description: "AI-generated remediation playbooks, synced from Gitea"
+    scm_type: git
+    scm_url: "{{ gitea_url_internal }}/{{ gitea_admin_user }}/{{ demo_playbook_repo }}.git"
+    scm_branch: "{{ gitea_branch }}"
+    credential: "{{ scm_credential_name }}"
+    scm_clean: true
+    scm_update_on_launch: true
+    scm_update_cache_timeout: 0
+    default_environment: "{{ demo_execution_environment }}"
+    wait: true
+    state: present

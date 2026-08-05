@@ -1,0 +1,110 @@
+---
+# =============================================================================
+# The two workflows, fully wired.
+#
+# Splitting the AIOps loop in two is deliberate: the enrichment workflow runs
+# unattended and stops at a reviewable prompt; the remediation workflow is
+# launched by a human who has seen what the AI proposed. That boundary is the
+# governance story, not an implementation detail.
+# =============================================================================
+
+- name: Build the enrichment workflow
+  ansible.controller.workflow_job_template:
+    name: "{{ enrichment_workflow_name }}"
+    organization: "{{ demo_organization }}"
+    description: >-
+      Triggered by Event-Driven Ansible when Apache fails. Gathers logs, asks
+      Red Hat AI for a root cause analysis, notifies the chat channel, and
+      prepares a reviewable remediation prompt.
+    inventory: "{{ demo_inventory_name }}"
+    survey_enabled: false
+    state: present
+    workflow_nodes:
+      - identifier: status_check
+        unified_job_template:
+          name: "{{ jt_status_check }}"
+          type: job_template
+          organization:
+            name: "{{ demo_organization }}"
+        related:
+          success_nodes:
+            - identifier: ai_analyze
+
+      - identifier: ai_analyze
+        unified_job_template:
+          name: "{{ jt_ai_analyze }}"
+          type: job_template
+          organization:
+            name: "{{ demo_organization }}"
+        related:
+          success_nodes:
+            - identifier: notify
+
+      - identifier: notify
+        unified_job_template:
+          name: "{{ jt_notify_mattermost }}"
+          type: job_template
+          organization:
+            name: "{{ demo_organization }}"
+        related:
+          success_nodes:
+            - identifier: build_prompt
+
+      - identifier: build_prompt
+        unified_job_template:
+          name: "{{ jt_build_lightspeed }}"
+          type: job_template
+          organization:
+            name: "{{ demo_organization }}"
+
+- name: Build the remediation workflow
+  ansible.controller.workflow_job_template:
+    name: "{{ remediation_workflow_name }}"
+    organization: "{{ demo_organization }}"
+    description: >-
+      Launched by an operator after reviewing the AI-generated prompt. Generates
+      the fix as a playbook, commits it to Git, syncs it into AAP, and builds the
+      job template that applies it.
+    inventory: "{{ demo_inventory_name }}"
+    survey_enabled: true
+    survey_spec: "{{ lookup('ansible.builtin.template', 'initial_survey.json.j2') | from_json }}"
+    state: present
+    workflow_nodes:
+      - identifier: generate
+        unified_job_template:
+          name: "{{ jt_lightspeed_generate }}"
+          type: job_template
+          organization:
+            name: "{{ demo_organization }}"
+        related:
+          success_nodes:
+            - identifier: commit
+
+      - identifier: commit
+        unified_job_template:
+          name: "{{ jt_commit_to_gitea }}"
+          type: job_template
+          organization:
+            name: "{{ demo_organization }}"
+        related:
+          success_nodes:
+            - identifier: sync
+
+      # Built-in project sync node - effectively a git pull, so AAP sees the
+      # commit the previous node just made before the next node uses it.
+      - identifier: sync
+        unified_job_template:
+          name: "{{ demo_playbook_project_name }}"
+          type: project
+          organization:
+            name: "{{ demo_organization }}"
+        related:
+          success_nodes:
+            - identifier: build_jt
+
+      - identifier: build_jt
+        unified_job_template:
+          name: "{{ jt_build_remediation }}"
+          type: job_template
+          organization:
+            name: "{{ demo_organization }}"

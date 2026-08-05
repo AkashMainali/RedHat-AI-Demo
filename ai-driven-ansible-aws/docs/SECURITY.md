@@ -72,6 +72,71 @@ is also covered by `.gitignore` patterns and lives only on the control node.
   freshly provisioned hosts are recorded then verified, avoiding blind
   `StrictHostKeyChecking=no`.
 
+## Demo content configuration (`demo_content` role)
+
+This stage creates the Gitea repos and configures AAP and EDA. Its secret
+handling:
+
+- **Where the calls originate.** Gitea and Mattermost are configured over
+  `127.0.0.1` on the control node, so the Gitea API token and the Mattermost
+  session token never traverse the network. The AAP and EDA API calls are
+  `delegate_to: localhost` — the workstation is the only place that holds the
+  `ansible.controller` collection and the target's SSH private key.
+- **Secrets land in AAP's encrypted credential store, not in playbooks.** The
+  AI endpoint key, Gitea token and Mattermost webhook are held in three custom
+  credential types and injected as extra vars at job run time. They are
+  encrypted at rest, masked in job output, and rotatable without editing any
+  playbook. The target's SSH private key is read from the workstation and pushed
+  straight into a Machine credential; it is never written to the repo, the
+  rendered inventory, or Terraform state.
+- **`no_log` coverage.** Every task whose module arguments contain a password,
+  token, key or webhook URL sets `no_log: true`. Because the EDA REST calls carry
+  basic-auth in their arguments, all of them are `no_log`; each mutating call is
+  therefore paired with a follow-up task that surfaces only the HTTP status and
+  response body, so API errors remain diagnosable without leaking credentials.
+- **One deliberate exception.** The AAP admin password is passed to the
+  `ansible.controller` modules through block-level `environment:`
+  (`CONTROLLER_PASSWORD`), which is the collection's documented mechanism. Env
+  values are not included in task results or `invocation.module_args`; they are
+  visible only at `-vvvv`. Avoid running the demo content stage at that
+  verbosity in a shared terminal or CI log.
+- **Gitea token scope and rotation.** The token minted for AAP is scoped to
+  `write:repository` only, and is deleted and re-minted on every run so the value
+  stored in AAP is always current.
+- **Gitea and Mattermost remain HTTP** on their host ports, reachable only from
+  your `/32`. Acceptable for a demo; see below before going further.
+
+## Mattermost open signups
+
+Mattermost 9+ disables open signups by default, which blocks the unauthenticated
+"create the first user" API call this build relies on to bootstrap its admin. The
+Quadlet unit therefore sets `MM_TEAMSETTINGS_ENABLEOPENSERVER=true`
+(`mattermost_allow_open_signup`), and the password policy is relaxed so a short
+lab password is accepted.
+
+Both are demo conveniences with bounded exposure — port 8065 is only reachable
+from `allowed_ingress_cidrs` (your `/32`), never the internet. Do not carry this
+pattern into anything shared: create the first admin out of band (`mmctl` in local
+mode against the container's socket), leave `EnableOpenServer` false, and keep the
+default password policy.
+
+## AI inference
+
+- **The local CPU endpoint is not exposed.** Ollama's port is opened in firewalld
+  only so AAP's rootless execution environments can reach it over the control
+  node's private address; no security group rule publishes it, so it is
+  unreachable from outside the VPC.
+- **External endpoints.** When you point the demo at OpenShift AI Model Serving,
+  RHEL AI or MaaS, the endpoint URL and its bearer token are stored in AAP's
+  encrypted credential store and injected as extra vars at job run time — masked
+  in job output and never written to the repo or the inventory. Prefer an endpoint
+  reachable privately (VPC peering, PrivateLink, or an internal route) over one
+  published to the internet, and scope the token to the single model.
+- **What leaves your environment.** The demo sends real log excerpts from the
+  target host to whichever endpoint you configure. With the local endpoint or an
+  in-cluster OpenShift AI model, that data never leaves your infrastructure. With
+  a hosted service, treat those logs as data shared with a third party.
+
 ## Recommended hardening beyond this demo
 
 - Put the nodes in private subnets behind a bastion / SSM-only access and drop

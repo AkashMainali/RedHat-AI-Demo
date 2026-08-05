@@ -1,0 +1,51 @@
+---
+# =============================================================================
+# Event-Driven Ansible - detect the Apache failure and start the AIOps chain.
+#
+# Filebeat on the target ships /var/log/httpd/*_log into Kafka. When Apache is
+# restarted with a bad directive, systemd stops the running process first, which
+# writes "caught SIGTERM, shutting down" to error_log - then the restart fails on
+# the bad directive. That shutdown line is the trigger.
+#
+# Only ONE rule launches the workflow. The Apache syntax error itself goes to
+# journald rather than error_log, so it never reaches Kafka; matching on it as a
+# second trigger would either never fire or, worse, double-launch the workflow
+# on some configurations. It is kept as a logging rule only.
+#
+# Kafka host, port and topic arrive as activation extra_vars so this rulebook
+# stays environment-agnostic.
+#
+# Adapted from ansible-tmm/aiops-summitlab (rulebooks/web_app.yml).
+# =============================================================================
+- name: Web application incident detection
+  hosts: all
+
+  sources:
+    - name: httpd log events from Kafka
+      ansible.eda.kafka:
+        host: "{{ kafka_host }}"
+        port: "{{ kafka_port | default(9092) }}"
+        topic: "{{ kafka_topic | default('httpd-events') }}"
+        group_id: "{{ kafka_group_id | default('eda-httpd') }}"
+        offset: latest
+
+  rules:
+    - name: Apache shutdown detected - start the enrichment workflow
+      condition: event.body.message is search("shutting down", ignorecase=true)
+      # Apache logs the shutdown line per worker, so a single restart produces
+      # several matching events. Without this throttle the demo launches the
+      # workflow once per worker.
+      throttle:
+        once_within: 120 seconds
+        group_by_attributes:
+          - event.body.message
+      action:
+        run_workflow_template:
+          organization: "{{ demo_organization | default('Default') }}"
+          name: "{{ enrichment_workflow_name | default('AI Insights and Lightspeed prompt generation') }}"
+
+    - name: Log every event for demo visibility
+      condition: event.body.message is defined
+      action:
+        debug:
+          msg: "{{ event.body.message }}"

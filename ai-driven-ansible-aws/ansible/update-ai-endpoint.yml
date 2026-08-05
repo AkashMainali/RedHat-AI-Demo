@@ -1,0 +1,118 @@
+---
+# =============================================================================
+# Repoint the demo at a different AI inference endpoint.
+#
+# Use this when you have an OpenShift AI / RHEL AI / MaaS endpoint and want the
+# demo to use it instead of the local CPU endpoint. It updates ONLY the AAP
+# "Demo AI Endpoint" credential - it does not touch AAP itself, so it takes
+# seconds rather than re-running the containerized installer.
+#
+#   scripts/set-ai-endpoint.sh          (wrapper that prompts and runs this)
+#
+# Or directly:
+#   AI_MODEL_ENDPOINT=... AI_MODEL_ID=... AI_MODEL_API_KEY=... \
+#     ansible-playbook -i inventory.ini update-ai-endpoint.yml
+#
+# The endpoint is verified BEFORE the credential is written, because a wrong
+# model id is the most common cause of the demo failing mid-run.
+# =============================================================================
+- name: Repoint the demo's AI inference endpoint
+  hosts: control
+  gather_facts: false
+
+  pre_tasks:
+    - name: Require an endpoint URL
+      ansible.builtin.assert:
+        that:
+          - ai_model_url | length > 0
+          - "'/v1' in ai_model_url"
+        fail_msg: >-
+          Set AI_MODEL_ENDPOINT to an OpenAI-compatible base URL ending in /v1,
+          e.g. https://my-model-my-ns.apps.my-cluster.example.com/v1
+        quiet: true
+
+  tasks:
+    - name: Ask the endpoint which models it serves
+      ansible.builtin.uri:
+        url: "{{ ai_model_url | regex_replace('/$', '') }}/models"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ ai_model_api_key }}"
+        status_code: 200
+        validate_certs: "{{ ai_validate_certs | default(false) | bool }}"
+        timeout: 30
+      register: models
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Show what the endpoint advertises
+      ansible.builtin.debug:
+        msg: >-
+          Endpoint serves: {{ models.json.data | map(attribute='id') | list }}
+
+    - name: Confirm the configured model id is actually served
+      ansible.builtin.assert:
+        that:
+          - ai_model_id in (models.json.data | map(attribute='id') | list)
+        fail_msg: >-
+          AI_MODEL_ID is '{{ ai_model_id }}' but the endpoint serves
+          {{ models.json.data | map(attribute='id') | list }}.
+          Set AI_MODEL_ID to one of those, otherwise every AI job template will
+          fail with a model-not-found error.
+        quiet: true
+
+    - name: Prove the endpoint can complete a chat request
+      ansible.builtin.uri:
+        url: "{{ ai_model_url | regex_replace('/$', '') }}/chat/completions"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ai_model_api_key }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          model: "{{ ai_model_id }}"
+          messages:
+            - role: user
+              content: "Reply with the single word: ready"
+          max_tokens: 8
+          temperature: 0
+        status_code: 200
+        validate_certs: "{{ ai_validate_certs | default(false) | bool }}"
+        timeout: 120
+      register: smoke
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Update the AAP credential to point at the new endpoint
+      ansible.controller.credential:
+        name: "{{ ai_credential_name }}"
+        organization: "{{ demo_organization }}"
+        credential_type: "{{ ai_credential_name }}"
+        inputs:
+          ai_model_url: "{{ ai_model_url }}"
+          ai_model_id: "{{ ai_model_id }}"
+          ai_model_api_key: "{{ ai_model_api_key }}"
+        state: present
+      environment:
+        CONTROLLER_HOST: "{{ aap_controller_host }}"
+        CONTROLLER_USERNAME: "{{ aap_admin_user }}"
+        CONTROLLER_PASSWORD: "{{ aap_admin_password }}"
+        CONTROLLER_VERIFY_SSL: "false"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - "AI endpoint updated in AAP."
+          - "  Endpoint : {{ ai_model_url }}"
+          - "  Model    : {{ ai_model_id }}"
+          - "  Test     : endpoint replied '{{ smoke.json.choices[0].message.content | trim }}'"
+          - "Every AI job template now uses this endpoint. Nothing else to change."
+
+  vars:
+    ai_credential_name: "Demo AI Endpoint"
+    demo_organization: "Default"

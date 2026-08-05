@@ -1,0 +1,43 @@
+---
+# =============================================================================
+# Demo reset: restore Apache to a known-good state WITHOUT running the AIOps
+# workflows. Use this between demo runs. Adapted from
+# ansible-tmm/aiops-summitlab.
+# =============================================================================
+- name: Restore the Apache configuration
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Ensure Apache is installed
+      ansible.builtin.dnf:
+        name: httpd
+        state: present
+
+    - name: Remove the invalid directive
+      ansible.builtin.lineinfile:
+        path: /etc/httpd/conf/httpd.conf
+        regexp: '^InvalidDirectiveHere$'
+        state: absent
+
+    - name: Validate the configuration before restarting
+      ansible.builtin.command:
+        cmd: apachectl configtest
+      register: configtest
+      changed_when: false
+
+    - name: Restart and enable Apache
+      ansible.builtin.systemd_service:
+        name: httpd
+        state: restarted
+        enabled: true
+
+    - name: Confirm Apache is serving
+      ansible.builtin.uri:
+        url: "http://127.0.0.1/"
+        status_code: 200
+      retries: 6
+      delay: 5
+      register: httpd_check
+      until: httpd_check is succeeded

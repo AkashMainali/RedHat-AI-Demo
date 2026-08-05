@@ -1,0 +1,120 @@
+---
+# =============================================================================
+# Enrichment step 2 - ask Red Hat AI to analyse the incident.
+#
+# Calls an OpenAI-compatible /v1/chat/completions endpoint twice: once for a
+# short remediation instruction (which becomes the Lightspeed prompt) and once
+# for a full root cause analysis (which goes to the chat/ITSM channel).
+#
+# The endpoint, key and model id arrive as extra vars injected by the
+# "Demo AI Endpoint" custom credential - nothing is hardcoded here. That means
+# this playbook works unchanged against Ollama, vLLM, RHEL AI, OpenShift AI
+# Model Serving, or Red Hat MaaS.
+#
+# Adapted from ansible-tmm/aiops-summitlab (rhelai_inference_survey.yml), which
+# used the legacy /v1/completions shape. Chat completions is used here because
+# every current serving stack supports it.
+# =============================================================================
+- name: Analyse the incident with Red Hat AI
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    _endpoint: "{{ ai_model_url | default('') | regex_replace('/$', '') }}"
+    _model: "{{ ai_model_id | default('granite3.1-dense:2b') }}"
+    _timeout: "{{ ai_request_timeout | default(600) | int }}"
+
+  tasks:
+    - name: Validate that an AI endpoint was supplied
+      ansible.builtin.assert:
+        that:
+          - _endpoint | length > 0
+        fail_msg: >-
+          No AI endpoint configured. Attach the "Demo AI Endpoint" credential
+          to this job template, or pass ai_model_url as an extra variable.
+        quiet: true
+
+    - name: Request a concise remediation instruction
+      ansible.builtin.uri:
+        url: "{{ _endpoint }}/chat/completions"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+          Authorization: "Bearer {{ ai_model_api_key | default('not-required') }}"
+        body_format: json
+        body:
+          model: "{{ _model }}"
+          messages:
+            - role: system
+              content: >-
+                You are a Red Hat Enterprise Linux subject matter expert. Answer
+                concisely and only with what was asked.
+            - role: user
+              content: "{{ fix_prompt }}"
+          max_tokens: "{{ ai_fix_max_tokens | default(120) | int }}"
+          temperature: 0
+        status_code: 200
+        timeout: "{{ _timeout | int }}"
+        return_content: true
+      register: fix_response
+      retries: 3
+      delay: 15
+      until: fix_response is succeeded
+
+    - name: Request a root cause analysis
+      ansible.builtin.uri:
+        url: "{{ _endpoint }}/chat/completions"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+          Authorization: "Bearer {{ ai_model_api_key | default('not-required') }}"
+        body_format: json
+        body:
+          model: "{{ _model }}"
+          messages:
+            - role: system
+              content: >-
+                You are a Red Hat Enterprise Linux subject matter expert writing
+                a root cause analysis for an incident ticket.
+            - role: user
+              content: "{{ rca_prompt }}"
+          max_tokens: "{{ ai_rca_max_tokens | default(600) | int }}"
+          temperature: 0.3
+        status_code: 200
+        timeout: "{{ _timeout | int }}"
+        return_content: true
+      register: rca_response
+      retries: 3
+      delay: 15
+      until: rca_response is succeeded
+
+    - name: Normalise the model output into plain strings
+      ansible.builtin.set_fact:
+        ai_fix_instruction: >-
+          {{ fix_response.json.choices[0].message.content | default('') | trim }}
+        ai_rca_text: >-
+          {{ rca_response.json.choices[0].message.content | default('') | trim }}
+
+    - name: Fail clearly if the model returned nothing usable
+      ansible.builtin.assert:
+        that:
+          - ai_fix_instruction | length > 0
+        fail_msg: >-
+          The AI endpoint responded but returned empty content. Check the model
+          id ({{ _model }}) and the endpoint ({{ _endpoint }}).
+        quiet: true
+
+    - name: Show the AI remediation instruction
+      ansible.builtin.debug:
+        msg: "AI suggests: {{ ai_fix_instruction }}"
+
+    - name: Show the AI root cause analysis
+      ansible.builtin.debug:
+        msg: "{{ ai_rca_text }}"
+
+    - name: Publish the AI output for the downstream workflow nodes
+      ansible.builtin.set_stats:
+        data:
+          ai_fix_instruction: "{{ ai_fix_instruction }}"
+          ai_rca_text: "{{ ai_rca_text }}"

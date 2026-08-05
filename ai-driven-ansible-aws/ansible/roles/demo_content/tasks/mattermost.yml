@@ -1,0 +1,190 @@
+---
+# =============================================================================
+# Bootstrap Mattermost so the demo has somewhere to post.
+#
+# Creates the Automators team, ensures incoming webhooks are enabled, and mints
+# the webhook the "Notify via Mattermost" job template posts to. Mattermost
+# stands in for ServiceNow / Jira in this demo.
+#
+# All calls go over loopback on the control node.
+# =============================================================================
+- name: Set the Mattermost API base URL (loopback on the control node)
+  ansible.builtin.set_fact:
+    _mm_api: "http://127.0.0.1:{{ mattermost_port }}/api/v4"
+
+- name: Wait for Mattermost
+  ansible.builtin.uri:
+    url: "{{ _mm_api }}/system/ping"
+    status_code: 200
+  register: _mm_ready
+  retries: 40
+  delay: 5
+  until: _mm_ready is succeeded
+
+- name: Log in as the Mattermost admin
+  ansible.builtin.uri:
+    url: "{{ _mm_api }}/users/login"
+    method: POST
+    body_format: json
+    body:
+      login_id: "{{ mattermost_admin_user }}"
+      password: "{{ mm_admin_password }}"
+    status_code: 200
+  register: _mm_login
+  no_log: true
+
+- name: Hold the session token
+  # Mattermost returns the token in a response HEADER, which the uri module
+  # exposes lowercased with dashes as underscores. The header name has varied by
+  # version ('Token' currently, 'X-Auth-Token' historically), so accept either.
+  ansible.builtin.set_fact:
+    _mm_token: >-
+      {{ _mm_login.token
+         | default(_mm_login.x_auth_token | default('', true), true) }}
+  no_log: true
+
+- name: Fail if the login returned no session token
+  ansible.builtin.assert:
+    that:
+      - _mm_token | length > 0
+    fail_msg: >-
+      Logged in to Mattermost but no session token was returned in the 'Token' or
+      'X-Auth-Token' header. Nothing below can authenticate without it.
+    quiet: true
+
+- name: Build the authenticated request headers
+  ansible.builtin.set_fact:
+    _mm_headers:
+      Authorization: "Bearer {{ _mm_token }}"
+      Content-Type: "application/json"
+  no_log: true
+
+
+- name: Ensure incoming webhooks are enabled
+  # Belt-and-braces only. These are already set via MM_SERVICESETTINGS_* in the
+  # Quadlet unit, and Mattermost treats environment-supplied settings as
+  # read-only - so this call is expected to be a no-op and its result is
+  # deliberately ignored. The webhook creation below is the real test of whether
+  # incoming webhooks work.
+  ansible.builtin.uri:
+    url: "{{ _mm_api }}/config/patch"
+    method: PUT
+    headers: "{{ _mm_headers }}"
+    body_format: json
+    body:
+      ServiceSettings:
+        EnableIncomingWebhooks: true
+        EnablePostUsernameOverride: true
+        EnablePostIconOverride: true
+    status_code: [200, 400, 403]
+  failed_when: false
+  no_log: true
+
+- name: Create the demo team
+  ansible.builtin.uri:
+    url: "{{ _mm_api }}/teams"
+    method: POST
+    headers: "{{ _mm_headers }}"
+    body_format: json
+    body:
+      name: "{{ mattermost_team_slug }}"
+      display_name: "{{ mattermost_team_display }}"
+      type: "O"
+    status_code: [201, 400]
+  register: _mm_team_create
+  no_log: true
+
+- name: Resolve the team
+  ansible.builtin.uri:
+    url: "{{ _mm_api }}/teams/name/{{ mattermost_team_slug }}"
+    method: GET
+    headers: "{{ _mm_headers }}"
+    status_code: 200
+  register: _mm_team
+  no_log: true
+
+- name: Ensure the admin is a member of the team
+  ansible.builtin.uri:
+    url: "{{ _mm_api }}/teams/{{ _mm_team.json.id }}/members"
+    method: POST
+    headers: "{{ _mm_headers }}"
+    body_format: json
+    body:
+      team_id: "{{ _mm_team.json.id }}"
+      user_id: "{{ _mm_login.json.id }}"
+    status_code: [201, 400, 409]
+  no_log: true
+
+- name: Resolve the target channel
+  ansible.builtin.uri:
+    url: "{{ _mm_api }}/teams/{{ _mm_team.json.id }}/channels/name/{{ mattermost_channel }}"
+    method: GET
+    headers: "{{ _mm_headers }}"
+    status_code: 200
+  register: _mm_channel
+  no_log: true
+
+- name: List existing incoming webhooks
+  ansible.builtin.uri:
+    url: "{{ _mm_api }}/hooks/incoming?team_id={{ _mm_team.json.id }}&per_page=200"
+    method: GET
+    headers: "{{ _mm_headers }}"
+    status_code: 200
+  register: _mm_hooks
+  no_log: true
+
+- name: Create the demo incoming webhook
+  ansible.builtin.uri:
+    url: "{{ _mm_api }}/hooks/incoming"
+    method: POST
+    headers: "{{ _mm_headers }}"
+    body_format: json
+    body:
+      channel_id: "{{ _mm_channel.json.id }}"
+      display_name: "{{ mattermost_webhook_display }}"
+      description: "Posts incident logs and AI root cause analysis from AAP"
+    status_code: 201
+  register: _mm_hook_new
+  when: >-
+    mattermost_webhook_display not in
+    (_mm_hooks.json | default([]) | map(attribute='display_name') | list)
+  no_log: true
+
+- name: Resolve the webhook id
+  ansible.builtin.set_fact:
+    _mm_hook_id: >-
+      {{ _mm_hook_new.json.id
+         if (_mm_hook_new.changed | default(false))
+         else (_mm_hooks.json
+               | selectattr('display_name', 'equalto', mattermost_webhook_display)
+               | map(attribute='id') | first) }}
+
+
+- name: Hold the webhook URL for the AAP credential tasks
+  # Built from the control node's private IP because the AAP execution
+  # environments post to it from inside the same host.
+  ansible.builtin.set_fact:
+    mattermost_webhook_url: "http://{{ control_private_ip }}:{{ mattermost_port }}/hooks/{{ _mm_hook_id }}"
+  no_log: true
+
+- name: Post a smoke-test message so the channel is not empty at demo time
+  ansible.builtin.uri:
+    url: "{{ mattermost_webhook_url }}"
+    method: POST
+    body_format: json
+    body:
+      username: "Ansible Automation Platform"
+      attachments:
+        - color: "#00a3e0"
+          title: "Environment ready"
+          text: >-
+            AIOps demo wiring complete. Incident logs and AI root cause analysis
+            will appear in this channel when the enrichment workflow runs.
+    status_code: 200
+  no_log: true
+
+- name: Report the Mattermost state
+  ansible.builtin.debug:
+    msg: >-
+      Mattermost team '{{ mattermost_team_display }}' ready with webhook
+      '{{ mattermost_webhook_display }}' posting to #{{ mattermost_channel }}.

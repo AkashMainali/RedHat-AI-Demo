@@ -12,6 +12,37 @@ ContainerName=mattermost
 Network=aiops
 PublishPort={{ mattermost_port }}:8065
 
+# Mattermost reads configuration from MM_<SECTION>_<KEY> environment variables,
+# which take precedence over the bundled config.json. Setting them here means the
+# server comes up demo-ready on first boot instead of needing an authenticated
+# API call to fix its own configuration - which would be circular, since that
+# call requires the admin account we cannot create yet.
+#
+# EnableOpenServer is the important one: Mattermost 9+ defaults it to FALSE, so
+# an unauthenticated POST /api/v4/users is rejected with
+# "api.user.create_user.no_open_server" and the first-user bootstrap fails.
+Environment=MM_TEAMSETTINGS_ENABLEOPENSERVER={{ 'true' if mattermost_allow_open_signup | bool else 'false' }}
+Environment=MM_TEAMSETTINGS_ENABLEUSERCREATION=true
+Environment=MM_TEAMSETTINGS_ENABLETEAMCREATION=true
+Environment=MM_TEAMSETTINGS_SITENAME=AIOps Demo
+
+# The demo posts incident logs and AI analysis through an incoming webhook, and
+# overrides the poster's username/icon so messages read as "Red Hat AI" and
+# "Ansible Automation Platform" rather than the admin account.
+Environment=MM_SERVICESETTINGS_ENABLEINCOMINGWEBHOOKS=true
+Environment=MM_SERVICESETTINGS_ENABLEPOSTUSERNAMEOVERRIDE=true
+Environment=MM_SERVICESETTINGS_ENABLEPOSTICONOVERRIDE=true
+Environment=MM_SERVICESETTINGS_SITEURL=http://{{ control_public_ip }}:{{ mattermost_port }}
+
+# Relax the password policy to whatever the demo password satisfies. Without
+# this, a short lab password is rejected at user creation with a validation
+# error that is easy to mistake for an auth problem.
+Environment=MM_PASSWORDSETTINGS_MINIMUMLENGTH=8
+Environment=MM_PASSWORDSETTINGS_LOWERCASE=false
+Environment=MM_PASSWORDSETTINGS_NUMBER=false
+Environment=MM_PASSWORDSETTINGS_UPPERCASE=false
+Environment=MM_PASSWORDSETTINGS_SYMBOL=false
+
 [Service]
 Restart=always
 TimeoutStartSec=600

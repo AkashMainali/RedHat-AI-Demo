@@ -1,0 +1,587 @@
+---
+# =============================================================================
+# Event-Driven Ansible configuration.
+#
+# Driven through the EDA REST API rather than the ansible.eda collection: the AAP
+# containerized setup bundle ships ansible.controller and ansible.platform but
+# not ansible.eda, and requiring an Automation Hub token just for this would add
+# a credential the rest of the build does not need.
+#
+# Three things here are easy to get wrong and are handled explicitly:
+#
+#   1. ADDRESSING. The decision environment container runs inside the VPC, where
+#      the control node's own Elastic IP is NOT routable. Its controller
+#      credential must therefore use the private address, or ansible-rulebook
+#      fails with "Connection timeout to host https://<eip>/api/v2/config/" and
+#      the activation restart-loops.
+#
+#   2. CREDENTIAL DRIFT. Credentials are PATCHed on every run, not just created.
+#      The Gitea API token is re-minted each run, so a credential created once and
+#      never updated would hold a revoked token.
+#
+#   3. ASYNCHRONOUS DELETION. Activations are immutable, so changing the rulebook
+#      or its variables means delete-and-recreate. DELETE returns 204 immediately
+#      but EDA still has to stop the running pod; recreating before that finishes
+#      fails with "activation with this name already exists". We wait for the
+#      record to actually disappear.
+#
+# Authentication comes from module_defaults rather than a per-task 'args' dict -
+# same effect, without Ansible's "using a variable for a task's args is unsafe"
+# warning on every call. Every uri task keeps no_log because the basic-auth
+# password rides in its arguments; the tasks that report failures are plain
+# fail/debug tasks, so API errors stay visible without leaking it.
+# =============================================================================
+# =============================================================================
+# Discover the URL ansible-rulebook must use for the controller.
+#
+# This runs ON THE CONTROL NODE, because that is where the decision environment
+# container will run and therefore the only place whose reachability matters.
+#
+# Why discovery rather than a hardcoded value: ansible-rulebook asks for
+# {host}/api/v2/config/ with an absolute path, so the host cannot carry a path
+# prefix. On AAP 2.5+ the gateway on :443 serves the controller under
+# /api/controller/v2/ and returns 404 for /api/v2/ - so the gateway address does
+# not work, and the containerized components sit on their own ports instead
+# (:8443 controller, :8444 hub, :8445 EDA). Probing for whichever URL actually
+# answers /api/v2/config/ keeps this correct across topologies and versions
+# rather than depending on a port number being remembered right.
+# =============================================================================
+- name: Find a controller URL that serves the legacy /api/v2/ path
+  ansible.builtin.uri:
+    url: "{{ item }}/api/v2/config/"
+    method: GET
+    url_username: "{{ aap_admin_user }}"
+    url_password: "{{ aap_admin_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    status_code: [200, 401, 403, 404]
+    timeout: 15
+  loop:
+    - "https://{{ control_private_ip }}:8443"
+    - "https://{{ control_private_ip }}"
+    - "https://{{ control_private_ip }}:8013"
+    - "http://{{ control_private_ip }}:8013"
+  loop_control:
+    label: "{{ item }}"
+  register: _eda_ctrl_probe
+  failed_when: false
+  no_log: true
+
+- name: Report what each candidate returned
+  ansible.builtin.debug:
+    msg: >-
+      {{ _eda_ctrl_probe.results
+         | map(attribute='item') | zip(_eda_ctrl_probe.results | map(attribute='status') | list)
+         | map('join', ' -> HTTP ') | list }}
+
+- name: Select the controller URL for ansible-rulebook
+  # 200 means the endpoint exists and the credentials work. 401/403 also prove the
+  # endpoint EXISTS (auth is evaluated after routing), which is enough - the
+  # rulebook supplies its own credentials. 404 means wrong path, so reject it.
+  ansible.builtin.set_fact:
+    eda_controller_url: >-
+      {{ (_eda_ctrl_probe.results
+          | selectattr('status', 'in', [200, 401, 403])
+          | map(attribute='item') | list | first)
+         | default('', true) }}
+
+- name: Fail with guidance if no controller endpoint answers /api/v2/
+  ansible.builtin.fail:
+    msg: >-
+      No controller URL on this host serves /api/v2/config/, which
+      ansible-rulebook requires in order to launch job templates.
+      Probed: {{ _eda_ctrl_probe.results | map(attribute='item') | list }}
+      (all returned 404 or failed).
+      On the control node, find the controller's listening port with
+      'sudo ss -ltnp | grep -E "8443|8013|443"' and check
+      'sudo podman ps --format "{{ '{{' }}.Names{{ '}}' }} {{ '{{' }}.Ports{{ '}}' }}"',
+      then set eda_controller_url in ansible/group_vars/all.yml.
+  when: eda_controller_url | length == 0
+
+- name: Report the controller URL EDA will use
+  ansible.builtin.debug:
+    msg: >-
+      ansible-rulebook will reach the controller at {{ eda_controller_url }}
+      (the gateway on :443 serves /api/controller/v2/ and 404s on /api/v2/,
+      which is why this is not simply the gateway address).
+
+- name: Configure Event-Driven Ansible
+  delegate_to: localhost
+  become: false
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ aap_admin_user }}"
+      url_password: "{{ aap_admin_password }}"
+      force_basic_auth: true
+      validate_certs: false
+  block:
+    - name: Set the EDA API base URL
+      ansible.builtin.set_fact:
+        _eda_api: "https://{{ control_public_ip }}/api/eda/v1"
+
+    - name: Wait for the EDA API
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/status/"
+        method: GET
+        status_code: [200]
+      register: _eda_ready
+      retries: "{{ aap_api_wait_retries }}"
+      delay: "{{ aap_api_wait_delay }}"
+      until: _eda_ready.status | default(0) == 200
+      failed_when: false
+      no_log: true
+
+    - name: Fail if the EDA API never came up
+      ansible.builtin.fail:
+        msg: >-
+          The EDA API at {{ _eda_api }} did not respond
+          (last status: {{ _eda_ready.status | default('no response') }}).
+          Check the automation-eda containers on the control node with
+          'sudo podman ps | grep eda'.
+      when: _eda_ready.status | default(0) != 200
+
+    # --- organization -------------------------------------------------------
+    - name: Resolve the EDA organization
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/organizations/?name={{ demo_organization | urlencode }}"
+        method: GET
+        status_code: 200
+      register: _eda_org
+      failed_when: false
+      no_log: true
+
+    - name: Confirm the organization was found
+      ansible.builtin.assert:
+        that:
+          - _eda_org.status | default(0) == 200
+          - _eda_org.json.count | default(0) | int > 0
+        fail_msg: >-
+          Could not resolve EDA organization '{{ demo_organization }}'
+          (HTTP {{ _eda_org.status | default('no response') }}). Check that AAP has
+          a subscription attached and that the admin credentials are correct.
+        quiet: true
+
+    - name: Hold the organization id
+      ansible.builtin.set_fact:
+        _eda_org_id: "{{ _eda_org.json.results[0].id }}"
+
+    # --- credential types ---------------------------------------------------
+    - name: Resolve the EDA credential types
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/credential-types/?name={{ item.query | urlencode }}"
+        method: GET
+        status_code: 200
+      register: _eda_cred_types
+      loop:
+        - key: aap
+          query: "Red Hat Ansible Automation Platform"
+        - key: scm
+          query: "Source Control"
+      loop_control:
+        label: "{{ item.query }}"
+      failed_when: false
+      no_log: true
+
+    - name: Confirm both credential types exist
+      ansible.builtin.assert:
+        that:
+          - item.status | default(0) == 200
+          - item.json.count | default(0) | int > 0
+        fail_msg: >-
+          EDA credential type '{{ item.item.query }}' not found
+          (HTTP {{ item.status | default('no response') }}). This ships with AAP -
+          check the EDA containers are healthy on the control node.
+        quiet: true
+      loop: "{{ _eda_cred_types.results }}"
+      loop_control:
+        label: "{{ item.item.query }}"
+
+    - name: Hold the credential type ids
+      ansible.builtin.set_fact:
+        _eda_type_aap: "{{ _eda_cred_types.results[0].json.results[0].id }}"
+        _eda_type_scm: "{{ _eda_cred_types.results[1].json.results[0].id }}"
+
+    # --- credentials: create if absent, PATCH if present --------------------
+    - name: Look for existing EDA credentials
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/eda-credentials/?name={{ item | urlencode }}"
+        method: GET
+        status_code: 200
+      register: _eda_creds_existing
+      loop:
+        - "{{ eda_aap_credential_name }}"
+        - "{{ scm_credential_name }} (EDA)"
+      loop_control:
+        label: "{{ item }}"
+      no_log: true
+
+    - name: Create or update the AAP credential in EDA
+      # Uses the DISCOVERED controller URL, not the gateway address: this
+      # credential is consumed by ansible-rulebook, which requests
+      # {host}/api/v2/config/ - a path the AAP 2.5+ gateway does not serve.
+      ansible.builtin.uri:
+        url: >-
+          {{ _eda_api }}/eda-credentials/{{
+            (_eda_creds_existing.results[0].json.results[0].id ~ '/')
+            if (_eda_creds_existing.results[0].json.count | int > 0) else ''
+          }}
+        method: "{{ 'PATCH' if (_eda_creds_existing.results[0].json.count | int > 0) else 'POST' }}"
+        body_format: json
+        body: >-
+          {{
+            {
+              'name': eda_aap_credential_name,
+              'description': 'Lets rulebook actions launch controller workflows',
+              'credential_type_id': _eda_type_aap | int,
+              'organization_id': _eda_org_id | int,
+              'inputs': {
+                'host': eda_controller_url,
+                'username': aap_admin_user,
+                'password': aap_admin_password,
+                'verify_ssl': false,
+              },
+            }
+          }}
+        status_code: [200, 201]
+      register: _eda_cred_aap
+      failed_when: false
+      no_log: true
+
+    - name: Surface any error on the AAP credential
+      ansible.builtin.fail:
+        msg: >-
+          EDA rejected the AAP credential (HTTP {{ _eda_cred_aap.status }}):
+          {{ _eda_cred_aap.json | default(_eda_cred_aap.msg) | default('no detail') }}
+      when: _eda_cred_aap.status | default(0) not in [200, 201]
+
+    - name: Create or update the SCM credential in EDA
+      # Must be PATCHed on re-runs: gitea.yml re-mints the API token every run, so
+      # a credential created once would hold a revoked token and project sync
+      # would fail with an authentication error.
+      ansible.builtin.uri:
+        url: >-
+          {{ _eda_api }}/eda-credentials/{{
+            (_eda_creds_existing.results[1].json.results[0].id ~ '/')
+            if (_eda_creds_existing.results[1].json.count | int > 0) else ''
+          }}
+        method: "{{ 'PATCH' if (_eda_creds_existing.results[1].json.count | int > 0) else 'POST' }}"
+        body_format: json
+        body: >-
+          {{
+            {
+              'name': scm_credential_name ~ ' (EDA)',
+              'description': 'Reads the demo rulebook repository from Gitea',
+              'credential_type_id': _eda_type_scm | int,
+              'organization_id': _eda_org_id | int,
+              'inputs': {
+                'username': gitea_admin_user,
+                'password': gitea_api_token,
+              },
+            }
+          }}
+        status_code: [200, 201]
+      register: _eda_cred_scm
+      failed_when: false
+      no_log: true
+
+    - name: Surface any error on the SCM credential
+      ansible.builtin.fail:
+        msg: >-
+          EDA rejected the SCM credential (HTTP {{ _eda_cred_scm.status }}):
+          {{ _eda_cred_scm.json | default(_eda_cred_scm.msg) | default('no detail') }}
+      when: _eda_cred_scm.status | default(0) not in [200, 201]
+
+    - name: Hold the EDA credential ids
+      ansible.builtin.set_fact:
+        _eda_cred_id: >-
+          {{ _eda_cred_aap.json.id
+             | default(_eda_creds_existing.results[0].json.results[0].id, true) }}
+        _eda_scm_id: >-
+          {{ _eda_cred_scm.json.id
+             | default(_eda_creds_existing.results[1].json.results[0].id, true) }}
+
+    # --- project ------------------------------------------------------------
+    - name: Look for an existing EDA project
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/projects/?name={{ eda_project_name | urlencode }}"
+        method: GET
+        status_code: 200
+      register: _eda_project_existing
+      no_log: true
+
+    - name: Create or update the EDA project
+      ansible.builtin.uri:
+        url: >-
+          {{ _eda_api }}/projects/{{
+            (_eda_project_existing.json.results[0].id ~ '/')
+            if (_eda_project_existing.json.count | int > 0) else ''
+          }}
+        method: "{{ 'PATCH' if (_eda_project_existing.json.count | int > 0) else 'POST' }}"
+        body_format: json
+        body: >-
+          {{
+            {
+              'name': eda_project_name,
+              'description': 'Rulebooks for the AI-driven Ansible automation demo',
+              'url': gitea_url_internal ~ '/' ~ gitea_admin_user ~ '/' ~ demo_content_repo ~ '.git',
+              'scm_branch': gitea_branch,
+              'organization_id': _eda_org_id | int,
+              'eda_credential_id': _eda_scm_id | int,
+              'verify_ssl': false,
+            }
+          }}
+        status_code: [200, 201]
+      register: _eda_project
+      failed_when: false
+      no_log: true
+
+    - name: Surface any error on the EDA project
+      ansible.builtin.fail:
+        msg: >-
+          EDA rejected the project (HTTP {{ _eda_project.status }}):
+          {{ _eda_project.json | default(_eda_project.msg) | default('no detail') }}
+      when: _eda_project.status | default(0) not in [200, 201]
+
+    - name: Hold the EDA project id
+      ansible.builtin.set_fact:
+        _eda_project_id: >-
+          {{ _eda_project.json.id
+             | default(_eda_project_existing.json.results[0].id, true) }}
+
+    - name: Resync the EDA project so the latest rulebook is indexed
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/projects/{{ _eda_project_id }}/sync/"
+        method: POST
+        status_code: [200, 202, 409]
+      failed_when: false
+      no_log: true
+
+    - name: Wait for the rulebook to be indexed
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/rulebooks/?name={{ (eda_rulebook | basename) | urlencode }}"
+        method: GET
+        status_code: 200
+      register: _eda_rulebook
+      retries: 30
+      delay: 10
+      until: _eda_rulebook.json.count | default(0) | int > 0
+      failed_when: false
+      no_log: true
+
+    - name: Confirm the rulebook was found in the synced project
+      ansible.builtin.assert:
+        that:
+          - _eda_rulebook.json.count | default(0) | int > 0
+        fail_msg: >-
+          EDA synced the project but did not index
+          '{{ eda_rulebook | basename }}'. Check the project's import state in
+          Automation Decisions - a rulebook with invalid syntax is silently
+          skipped, and a revoked Gitea token shows up here as a sync failure.
+        quiet: true
+
+    # --- decision environment ----------------------------------------------
+    - name: List the available decision environments
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/decision-environments/"
+        method: GET
+        status_code: 200
+      register: _eda_de
+      no_log: true
+
+    - name: Confirm a decision environment exists
+      ansible.builtin.assert:
+        that:
+          - _eda_de.json.count | default(0) | int > 0
+        fail_msg: >-
+          No decision environments found in EDA. The containerized install
+          normally creates one - check the EDA container logs on the control node.
+        quiet: true
+
+    - name: Pick the decision environment to run the rulebook in
+      # Prefer the configured name; otherwise fall back to whatever the platform
+      # shipped, so the activation still comes up on a default install.
+      ansible.builtin.set_fact:
+        _eda_de_id: >-
+          {{ (_eda_de.json.results
+              | selectattr('name', 'equalto', eda_decision_environment)
+              | map(attribute='id') | list | first)
+             | default(_eda_de.json.results[0].id, true) }}
+
+    # --- activation: delete, WAIT for it to go, then recreate ---------------
+    - name: Look for an existing rulebook activation
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/activations/?name={{ eda_activation_name | urlencode }}"
+        method: GET
+        status_code: 200
+      register: _eda_activation_existing
+      no_log: true
+
+    - name: Replace any existing activation
+      when: _eda_activation_existing.json.count | int > 0
+      block:
+        - name: Disable the existing activation first
+          # Stopping it before deletion makes the teardown quicker and more
+          # reliable than deleting a pod mid-restart-loop.
+          ansible.builtin.uri:
+            url: "{{ _eda_api }}/activations/{{ _eda_activation_existing.json.results[0].id }}/disable/"
+            method: POST
+            status_code: [204, 200, 400, 409]
+          failed_when: false
+          no_log: true
+
+        - name: Delete the existing activation
+          ansible.builtin.uri:
+            url: "{{ _eda_api }}/activations/{{ _eda_activation_existing.json.results[0].id }}/"
+            method: DELETE
+            status_code: [204, 404]
+          failed_when: false
+          no_log: true
+
+        - name: Wait for the activation to actually disappear
+          # DELETE returns immediately but EDA still has to stop the container.
+          # Recreating too early fails with "activation with this name already
+          # exists" - which is what a plain delete-then-create hits.
+          ansible.builtin.uri:
+            url: "{{ _eda_api }}/activations/?name={{ eda_activation_name | urlencode }}"
+            method: GET
+            status_code: 200
+          register: _eda_gone
+          retries: 30
+          delay: 5
+          until: _eda_gone.json.count | default(1) | int == 0
+          failed_when: false
+          no_log: true
+
+        - name: Fail if the old activation could not be removed
+          ansible.builtin.fail:
+            msg: >-
+              The existing rulebook activation '{{ eda_activation_name }}' is still
+              present after 150s of waiting for deletion. Delete it by hand in
+              Automation Decisions > Rulebook Activations, then re-run
+              ./scripts/demo_content.sh.
+          when: _eda_gone.json.count | default(1) | int != 0
+
+    - name: Create the rulebook activation
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/activations/"
+        method: POST
+        body_format: json
+        body:
+          name: "{{ eda_activation_name }}"
+          description: "Watches the Kafka topic for Apache failures on the target node"
+          project_id: "{{ _eda_project_id | int }}"
+          rulebook_id: "{{ _eda_rulebook.json.results[0].id | int }}"
+          decision_environment_id: "{{ _eda_de_id | int }}"
+          organization_id: "{{ _eda_org_id | int }}"
+          eda_credentials: ["{{ _eda_cred_id | int }}"]
+          extra_var: |
+            ---
+            kafka_host: {{ control_private_ip }}
+            kafka_port: {{ kafka_port }}
+            kafka_topic: {{ kafka_topic }}
+            kafka_group_id: eda-httpd
+            demo_organization: {{ demo_organization }}
+            enrichment_workflow_name: {{ enrichment_workflow_name }}
+          restart_policy: on-failure
+          is_enabled: true
+          log_level: info
+        status_code: [201]
+      register: _eda_activation
+      failed_when: false
+      no_log: true
+
+    - name: Surface any error creating the activation
+      ansible.builtin.fail:
+        msg: >-
+          EDA rejected the rulebook activation (HTTP {{ _eda_activation.status }}):
+          {{ _eda_activation.json | default(_eda_activation.msg) | default('no detail') }}
+          {% if 'already exists' in (_eda_activation.json | default({}) | string) %}
+          The previous activation had not finished deleting. Re-running usually
+          clears it; if not, delete '{{ eda_activation_name }}' by hand in
+          Automation Decisions > Rulebook Activations.
+          {% endif %}
+      when: _eda_activation.status | default(0) != 201
+
+    - name: Wait for the activation to start listening
+      # 12 x 10s. An activation that will come up does so in seconds; one that is
+      # restart-looping never will, so a longer wait only delays the diagnosis.
+      ansible.builtin.uri:
+        url: "{{ _eda_api }}/activations/{{ _eda_activation.json.id }}/"
+        method: GET
+        status_code: 200
+      register: _eda_activation_status
+      retries: 12
+      delay: 10
+      until: _eda_activation_status.json.status | default('') == 'running'
+      failed_when: false
+      no_log: true
+
+    # --- diagnose a failed activation --------------------------------------
+    - name: Collect the activation's own logs if it did not start
+      when: _eda_activation_status.json.status | default('') != 'running'
+      block:
+        - name: List the activation's instances
+          ansible.builtin.uri:
+            url: "{{ _eda_api }}/activations/{{ _eda_activation.json.id }}/instances/"
+            method: GET
+            status_code: 200
+          register: _eda_instances
+          failed_when: false
+          no_log: true
+
+        - name: Fetch the most recent instance log
+          ansible.builtin.uri:
+            url: "{{ _eda_api }}/activation-instances/{{ _eda_instances.json.results[0].id }}/logs/?limit=40"
+            method: GET
+            status_code: 200
+          register: _eda_logs
+          failed_when: false
+          when: (_eda_instances.json.results | default([])) | length > 0
+          no_log: true
+
+        - name: Show what the rulebook worker reported
+          ansible.builtin.debug:
+            msg: >-
+              {{ (_eda_logs.json.results | default([]))
+                 | map(attribute='log') | list | default(['no log lines returned'], true) }}
+
+        - name: Explain the likely cause
+          ansible.builtin.debug:
+            msg: >-
+              {% set logs = (_eda_logs.json.results | default([])) | map(attribute='log') | join(' ') %}
+              Activation '{{ eda_activation_name }}' is
+              '{{ _eda_activation_status.json.status | default('unknown') }}':
+              {{ _eda_activation_status.json.status_message | default('no status message') }}
+              {% if 'Connection timeout' in logs and 'api/v2/config' in logs %}
+              -> ansible-rulebook cannot REACH the controller. Its credential must
+              use a private address; a public Elastic IP is not routable from
+              inside the VPC. This build discovers and patches that on every run,
+              so re-run ./scripts/demo_content.sh.
+              {% elif '404' in logs and 'api/v2/config' in logs %}
+              -> ansible-rulebook reached something, but got 404 for
+              /api/v2/config/. That address is the AAP gateway, which serves the
+              controller under /api/controller/v2/ instead. The credential needs
+              the controller's own listener (usually :8443). Discovery selected
+              {{ eda_controller_url | default('nothing') }} - if that is the
+              gateway address, find the real port on the control node with
+              'sudo ss -ltnp | grep 8443' and set eda_controller_url in
+              ansible/group_vars/all.yml.
+              {% elif 'kafka' in logs | lower or 'broker' in logs | lower %}
+              -> the Kafka source is unreachable. Confirm 'sudo podman ps' shows
+              kafka on the control node and that
+              {{ control_private_ip }}:{{ kafka_port }} is listening.
+              {% elif 'credential' in logs | lower or '401' in logs %}
+              -> authentication to the controller failed. Check that
+              AAP_ADMIN_PASSWORD matches the AAP admin password.
+              {% else %}
+              -> see the log lines above, and Automation Decisions in the UI.
+              {% endif %}
+
+    - name: Report the EDA state
+      ansible.builtin.debug:
+        msg: >-
+          Rulebook activation '{{ eda_activation_name }}' is
+          {{ _eda_activation_status.json.status | default('unknown') }}, consuming
+          {{ kafka_topic }} at {{ control_private_ip }}:{{ kafka_port }} and
+          launching '{{ enrichment_workflow_name }}'.
+      when: _eda_activation_status.json.status | default('') == 'running'

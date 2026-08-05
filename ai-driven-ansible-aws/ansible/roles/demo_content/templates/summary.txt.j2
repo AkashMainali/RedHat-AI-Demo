@@ -1,0 +1,35 @@
+================= AI-Driven Ansible Automation demo is ready =================
+
+Access
+  AAP            https://{{ control_public_ip }}          {{ aap_admin_user }}
+  Gitea          {{ gitea_url_external }}          {{ gitea_admin_user }}
+  Mattermost     http://{{ control_public_ip }}:{{ mattermost_port }}     {{ mattermost_admin_user }}
+  Webserver      http://{{ target_public_ip }}
+
+AI inference
+  Endpoint       {{ ai_model_url }}
+  Model          {{ ai_model_id }}
+  Generation     {{ 'hosted Ansible Lightspeed' if lightspeed_mode == 'saas' else 'demo model endpoint' }}
+
+Created in AAP
+  Inventory      {{ demo_inventory_name }} ({{ demo_target_hostname }})
+  Projects       {{ demo_project_name }}, {{ demo_playbook_project_name }}
+  Workflows      {{ enrichment_workflow_name }}
+                 {{ remediation_workflow_name }}
+  Activation     {{ eda_activation_name }} -> {{ kafka_topic }}@{{ control_private_ip }}:{{ kafka_port }}
+
+Run the demo
+  1. Launch "{{ jt_break_apache }}" in Automation Execution > Templates.
+  2. Watch Automation Decisions > Rulebook Activations pick up the Kafka event.
+  3. "{{ enrichment_workflow_name }}" runs automatically.
+     Check Mattermost #{{ mattermost_channel }} for the logs and the AI RCA.
+  4. Launch "{{ remediation_workflow_name }}", review the AI prompt in the
+     survey, and finish. The generated playbook is committed to
+     {{ gitea_url_external }}/{{ gitea_admin_user }}/{{ demo_playbook_repo }}
+  5. Launch "{{ jt_execute_remediation }}" with limit {{ demo_target_hostname }}.
+  6. Confirm http://{{ target_public_ip }} is serving again.
+
+Reset between runs
+  Launch "{{ jt_restore_apache }}".
+
+==============================================================================

@@ -1,0 +1,86 @@
+---
+# =============================================================================
+# Enrichment step 3 - notify the chat / ITSM channel.
+#
+# Posts the raw incident logs and the AI root cause analysis to Mattermost,
+# standing in for ServiceNow or Jira. This is the "automated ticket enrichment"
+# moment of the demo: the ticket already carries logs and an RCA before a human
+# opens it.
+#
+# Uses ansible.builtin.uri against a Mattermost incoming webhook rather than
+# community.general.mattermost, so it runs on the default execution environment
+# with no extra collection.
+#
+# Adapted from ansible-tmm/aiops-summitlab (mattermost_first_message.yml).
+# =============================================================================
+- name: Send the incident and RCA to Mattermost
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    _service: "{{ incident_service | default('httpd') }}"
+    _host: "{{ incident_host | default('the target host') }}"
+
+  tasks:
+    - name: Validate that the webhook is configured
+      ansible.builtin.assert:
+        that:
+          - mattermost_webhook_url | default('') | length > 0
+        fail_msg: >-
+          No Mattermost webhook configured. Attach the "Demo Mattermost"
+          credential to this job template.
+        quiet: true
+
+    - name: Post the incident alert with logs
+      ansible.builtin.uri:
+        url: "{{ mattermost_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          username: "Ansible Automation Platform"
+          attachments:
+            - color: "#ee0000"
+              title: "ALERT: {{ _service | capitalize }} failure detected on {{ _host }}"
+              text: "Event captured by Event-Driven Ansible via Kafka."
+              fields:
+                - title: "Service"
+                  value: "{{ _service }}"
+                  short: true
+                - title: "Host"
+                  value: "{{ _host }}"
+                  short: true
+                - title: "Collected logs"
+                  value: "```\n{{ incident_summary | default('no summary available') | truncate(2800, true) }}\n```"
+                  short: false
+        status_code: 200
+      when: incident_summary | default('') | length > 0
+      no_log: true
+
+    - name: Post the AI-generated root cause analysis
+      ansible.builtin.uri:
+        url: "{{ mattermost_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          username: "Red Hat AI"
+          attachments:
+            - color: "#ffa500"
+              title: "RCA INSIGHT: {{ _service | capitalize }} root cause identified"
+              text: "AI-generated explanation, produced before any human triage."
+              fields:
+                - title: "Root cause analysis"
+                  value: "{{ ai_rca_text | default('No RCA available') | truncate(2800, true) }}"
+                  short: false
+                - title: "Suggested remediation"
+                  value: "{{ ai_fix_instruction | default('No suggestion available') | truncate(900, true) }}"
+                  short: false
+        status_code: 200
+      when: ai_rca_text | default('') | length > 0
+      no_log: true
+
+    - name: Confirm what was sent
+      ansible.builtin.debug:
+        msg: >-
+          Posted incident and RCA for {{ _service }} on {{ _host }} to
+          Mattermost.

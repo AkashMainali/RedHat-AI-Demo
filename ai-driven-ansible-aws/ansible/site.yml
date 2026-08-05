@@ -5,6 +5,19 @@
 # All secrets are read from the environment via lookups defined in
 # group_vars/all.yml. Nothing secret is passed on the command line or written
 # to the repo. Tasks that handle secrets set no_log: true.
+#
+# Roles are tagged so the stages can be run independently:
+#
+#   --tags base           RHSM registration and base packages
+#   --tags target         httpd + Filebeat on the target node
+#   --tags services       Kafka, Gitea, Mattermost containers
+#   --tags ai             local CPU inference endpoint
+#   --tags aap            the AAP containerized install (the slow one: 20-40 min)
+#   --tags subscription   attach the AAP subscription only (seconds)
+#   --tags demo_content   Gitea content + AAP/EDA configuration (minutes)
+#
+# scripts/demo_content.sh uses the last of these to iterate on the demo without
+# paying for the AAP install every time.
 # =============================================================================
 
 - name: Base configuration (all nodes)
@@ -13,20 +26,42 @@
   gather_facts: true
   roles:
     - role: common
+      tags: [base, common]
 
 - name: Configure the RHEL target (httpd + Filebeat log shipping)
   hosts: target
   become: true
   roles:
     - role: target
+      tags: [target]
 
 - name: Configure the control / services node
   hosts: control
   become: true
   roles:
     - role: control_base
+      tags: [services, control_base]
     - role: kafka
+      tags: [services, kafka]
     - role: gitea
+      tags: [services, gitea]
     - role: mattermost
+      tags: [services, mattermost]
+    # Local CPU inference endpoint for the demo's "Red Hat AI" job templates.
+    # Skipped when AI_MODEL_ENDPOINT points at an external serving stack
+    # (OpenShift AI, RHEL AI, MaaS). Runs before demo_content so the AI
+    # credential points at something that already answers.
+    - role: ollama
+      when: ai_backend == 'ollama'
+      tags: [ai, ollama]
     - role: aap
+      tags: [aap]
+    # Populates Gitea and configures AAP + EDA as code. Safe to re-run, and the
+    # fast path for iterating on the demo itself.
+    #
+    # Deliberately ONE tag rather than per-stage tags: the stages share facts
+    # (the Gitea API token minted in gitea.yml is consumed by the AAP credential
+    # and EDA stages), so running them in isolation would fail on undefined
+    # variables. Keeping it atomic means "--tags demo_content" is always correct.
     - role: demo_content
+      tags: [demo_content]

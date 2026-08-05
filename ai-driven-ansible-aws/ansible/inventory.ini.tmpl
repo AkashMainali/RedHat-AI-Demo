@@ -8,16 +8,20 @@ control-node ansible_host=${CONTROL_PUBLIC_IP}
 [target]
 target-node ansible_host=${TARGET_PUBLIC_IP}
 
-[control:vars]
-control_public_ip=${CONTROL_PUBLIC_IP}
-control_private_ip=${CONTROL_PRIVATE_IP}
-
 [target:vars]
 # Filebeat on the target ships to Kafka on the control node's PRIVATE IP.
 kafka_host=${CONTROL_PRIVATE_IP}
-control_private_ip=${CONTROL_PRIVATE_IP}
 
 [all:vars]
 ansible_user=${SSH_USER}
 ansible_ssh_private_key_file=${SSH_KEY_PATH}
 ansible_python_interpreter=/usr/bin/python3
+
+# Addresses of both nodes, available to every play. The demo wires AAP, EDA,
+# Kafka, Gitea and Mattermost together over the PRIVATE addresses, so demo
+# traffic never leaves the VPC. The PUBLIC ones are used only by the operator's
+# browser and by the API calls delegated to the workstation.
+control_public_ip=${CONTROL_PUBLIC_IP}
+control_private_ip=${CONTROL_PRIVATE_IP}
+target_public_ip=${TARGET_PUBLIC_IP}
+target_private_ip=${TARGET_PRIVATE_IP}

@@ -2,66 +2,7 @@
 - name: Ansible Automation Platform (containerized) install
   when: aap_install_enabled | bool
   block:
-    - name: Gather system facts to get hostname
-      ansible.builtin.setup:
-        gather_subset: all
-      register: system_facts
-
-    - name: Set hostname variable for inventory
-      ansible.builtin.set_fact:
-        system_hostname: "{{ ansible_hostname }}"
-
-    - name: Ensure system hostname resolves to the control node's private IP in /etc/hosts
-      ansible.builtin.lineinfile:
-        path: /etc/hosts
-        line: "{{ control_private_ip }} {{ system_hostname }} {{ system_hostname }}.local"
-        regexp: "^.*{{ system_hostname }}"
-        state: present
-      become: true
-
-    - name: Create encrypted vault file on control node
-      block:
-        - name: Create vault password file on control node
-          ansible.builtin.copy:
-            content: "{{ vault_password }}"
-            dest: "/home/{{ lab_user }}/.vault_pass"
-            mode: "0600"
-            owner: "{{ lab_user }}"
-            group: "{{ lab_user }}"
-          no_log: true
-
-        - name: Create vault YAML content
-          ansible.builtin.copy:
-            content: |
-              registry_username: {{ rh_registry_username | quote }}
-              registry_password: {{ rh_registry_password | quote }}
-            dest: "/home/{{ lab_user }}/.vault.yml"
-            mode: "0600"
-            owner: "{{ lab_user }}"
-            group: "{{ lab_user }}"
-          no_log: true
-
-        - name: Encrypt vault file using ansible-vault
-          ansible.builtin.shell: |
-            ansible-vault encrypt \
-              --vault-password-file /home/{{ lab_user }}/.vault_pass \
-              /home/{{ lab_user }}/.vault.yml && \
-            mv /home/{{ lab_user }}/.vault.yml /home/{{ lab_user }}/.vault
-          become: true
-          become_user: "{{ lab_user }}"
-          changed_when: true
-          no_log: true
-
-        - name: Verify vault file was created
-          ansible.builtin.stat:
-            path: "/home/{{ lab_user }}/.vault"
-          register: vault_file_stat
-
-        - name: Fail if vault file not created
-          ansible.builtin.fail:
-            msg: "Failed to create encrypted vault file on control node"
-          when: not vault_file_stat.stat.exists
-
+    # --- validate before changing anything --------------------------------
     - name: Validate the inputs AAP requires
       ansible.builtin.assert:
         that:
@@ -75,9 +16,15 @@
           in group_vars/all.yml to provision everything except AAP.
         quiet: true
 
-    - name: Install compression utilities needed for AAP tarball extraction
+    # --- prerequisites, BEFORE anything that uses them --------------------
+    # ansible-core has to come first: it provides ansible-vault, which the vault
+    # tasks below shell out to, and ansible-playbook, which runs the installer.
+    # Installing it later (as this role used to) fails with
+    # "ansible-vault: command not found".
+    - name: Install ansible-core and the utilities the installer needs
       ansible.builtin.dnf:
         name:
+          - ansible-core
           - tar
           - gzip
           - bzip2
@@ -85,6 +32,96 @@
           - zstd
           - unzip
         state: present
+
+    - name: Locate ansible-vault
+      ansible.builtin.command:
+        cmd: which ansible-vault
+      register: ansible_vault_bin
+      changed_when: false
+      failed_when: false
+
+    - name: Fail clearly if ansible-vault is still unavailable
+      ansible.builtin.fail:
+        msg: >-
+          ansible-core installed but 'ansible-vault' is not on PATH. Check that
+          the ansible-core package resolved from an enabled repository on this
+          RHEL {{ ansible_distribution_major_version | default('?') }} host
+          (dnf repolist), then re-run.
+      when: ansible_vault_bin.rc != 0
+
+    # --- hostname resolution ----------------------------------------------
+    - name: Gather system facts to get hostname
+      ansible.builtin.setup:
+        gather_subset: all
+
+    - name: Set hostname variable for inventory
+      ansible.builtin.set_fact:
+        system_hostname: "{{ ansible_hostname }}"
+
+    - name: Ensure system hostname resolves to the control node's private IP in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{ control_private_ip }} {{ system_hostname }} {{ system_hostname }}.local"
+        regexp: "^.*{{ system_hostname }}"
+        state: present
+      become: true
+
+    # --- registry credentials, encrypted at rest on the control node -------
+    - name: Create the encrypted vault file on the control node
+      block:
+        - name: Create the vault password file
+          ansible.builtin.copy:
+            content: "{{ vault_password }}"
+            dest: "/home/{{ lab_user }}/.vault_pass"
+            mode: "0600"
+            owner: "{{ lab_user }}"
+            group: "{{ lab_user }}"
+          no_log: true
+
+        - name: Write the registry credentials in plaintext (encrypted next)
+          ansible.builtin.copy:
+            content: |
+              registry_username: {{ rh_registry_username | quote }}
+              registry_password: {{ rh_registry_password | quote }}
+            dest: "/home/{{ lab_user }}/.vault.yml"
+            mode: "0600"
+            owner: "{{ lab_user }}"
+            group: "{{ lab_user }}"
+          no_log: true
+
+        - name: Encrypt the vault file
+          # Uses the resolved absolute path rather than relying on the PATH of a
+          # non-login become_user shell.
+          ansible.builtin.shell: |
+            set -o pipefail
+            {{ ansible_vault_bin.stdout | trim }} encrypt \
+              --vault-password-file /home/{{ lab_user }}/.vault_pass \
+              /home/{{ lab_user }}/.vault.yml \
+            && mv -f /home/{{ lab_user }}/.vault.yml /home/{{ lab_user }}/.vault
+          args:
+            executable: /bin/bash
+          become: true
+          become_user: "{{ lab_user }}"
+          changed_when: true
+
+        - name: Verify the encrypted vault file exists
+          ansible.builtin.stat:
+            path: "/home/{{ lab_user }}/.vault"
+          register: vault_file_stat
+
+        - name: Fail if the vault file was not created
+          ansible.builtin.fail:
+            msg: >-
+              Failed to create the encrypted vault file at
+              /home/{{ lab_user }}/.vault on the control node.
+          when: not vault_file_stat.stat.exists
+
+        - name: Remove any plaintext leftover
+          # Belt-and-braces: if the mv above ever failed after encryption, the
+          # plaintext credentials must not be left behind.
+          ansible.builtin.file:
+            path: "/home/{{ lab_user }}/.vault.yml"
+            state: absent
 
     - name: Create AAP installer directory
       ansible.builtin.file:
@@ -105,9 +142,11 @@
         that:
           - local_aap_tarball.files | length > 0
         fail_msg: >
-          No AAP tarball found in ansible/aap/ directory.
-          Please download the AAP 2.7 containerized setup tarball to ansible/aap/
-          from https://developers.redhat.com/products/ansible/download
+          No AAP tarball found in ansible/aap/.
+          Download the AAP 2.6 CONTAINERIZED setup bundle
+          (ansible-automation-platform-containerized-setup-2.6-*.tar.gz) into
+          ansible/aap/ from
+          https://developers.redhat.com/products/ansible/download
 
     - name: Copy AAP tarball from local ansible/aap/ to remote /tmp/aap-installer/
       ansible.builtin.copy:
@@ -147,11 +186,6 @@
         permanent: true
         immediate: true
         state: enabled
-
-    - name: Install Ansible (required for AAP containerized installer)
-      ansible.builtin.dnf:
-        name: ansible-core
-        state: present
 
     - name: Enable lingering for lab-user (required for user-scope systemd services)
       ansible.builtin.command:
@@ -206,14 +240,54 @@
     - name: Debug - Show AAP install output
       ansible.builtin.debug:
         msg: "{{ aap_install.stdout_lines[-50:] if aap_install.stdout_lines else 'No output' }}"
+
+    # Attach the subscription while the Red Hat credentials are still to hand.
+    # Without it the demo_content stage fails on POST /hosts/ with a 403 that
+    # reads like a permissions problem.
+    #
+    # Separately tagged so it can be run on its own against an already-installed
+    # AAP, without the 20-40 minute install:
+    #   ./scripts/bootstrap.sh --tags subscription
+    # These tasks depend only on group_vars and the inventory, never on the
+    # earlier tasks in this role, so running them in isolation is safe.
+    - name: Attach the AAP subscription
+      ansible.builtin.include_tasks:
+        file: subscription.yml
+        apply:
+          tags: [aap, subscription]
+      tags: [aap, subscription]
   rescue:
+    # Report WHICH task failed and what it said, before offering guidance. The
+    # previous version printed generic AAP-install advice for every failure in
+    # the block, which sent you looking at registry credentials when the real
+    # cause was a missing package.
+    - name: Show the task that actually failed
+      ansible.builtin.debug:
+        msg:
+          - "Failed task : {{ ansible_failed_task.name | default('unknown') }}"
+          - "Return code : {{ ansible_failed_result.rc | default('n/a') }}"
+          - "stderr      : {{ ansible_failed_result.stderr | default(ansible_failed_result.msg) | default('none') | truncate(600, true) }}"
+
     - name: Surface actionable AAP install guidance
       ansible.builtin.fail:
         msg: >-
-          The AAP 2.6 containerized install from tarball on RHEL 10 failed.
-          Verify: (1) your Red Hat credentials are correct (RH_REGISTRY_USERNAME/PASSWORD);
-          (2) the tarball download URL is accessible; (3) the installer inventory variables
-          for AAP 2.6 are correct - confirm against the Containerized Installation guide.
-          Check /tmp/aap_install.log on the control node for detailed error messages.
-          Re-run this play after fixing, or set aap_install_enabled=false to skip AAP
-          and keep the rest of the environment.
+          The AAP 2.6 containerized install failed at
+          "{{ ansible_failed_task.name | default('an unknown task') }}".
+          {% if 'command not found' in (ansible_failed_result.stderr | default('')) %}
+          A required command was missing - this points at a package that did not
+          install. Check 'dnf repolist' on the control node: the ansible-core and
+          AAP repositories must both be enabled for the attached subscription.
+          {% elif 'inventory' in (ansible_failed_task.name | default('') | lower) %}
+          The installer inventory could not be rendered or found. Check
+          {{ aap_inventory_path }} on the control node.
+          {% elif 'installer' in (ansible_failed_task.name | default('') | lower) %}
+          The installer itself failed. Read /tmp/aap_install.log on the control
+          node - the last 50 lines were printed above. Usual causes: registry
+          credentials rejected by registry.redhat.io, an AAP 2.6 inventory
+          variable mismatch, or insufficient memory on the control node.
+          {% else %}
+          See the failed task and stderr above.
+          {% endif %}
+          This stage is safely re-runnable: fix the cause and re-run, or set
+          aap_install_enabled=false in ansible/group_vars/all.yml to build
+          everything except AAP.

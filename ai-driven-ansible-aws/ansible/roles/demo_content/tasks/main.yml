@@ -1,42 +1,178 @@
 ---
 # =============================================================================
-# HOOKS ONLY - disabled by default (demo_content_enabled: false).
+# demo_content - everything the demo needs, as code.
 #
-# The upstream demo content - the specific AAP job templates, workflows, EDA
-# rulebooks, and the exact AI prompts - is proprietary to the Red Hat Demo
-# Platform and is not publicly published. This role provides the wiring point
-# and verifies AAP is up; you supply the content. See README.md in this role.
+#   1. Gitea      repositories, an API token, and the demo playbooks/rulebook
+#   2. Mattermost team, channel and incoming webhook
+#   3. AAP        credential types, credentials, inventory, projects, job
+#                 templates and both workflows
+#   4. EDA        project, credentials and the Kafka rulebook activation
+#
+# Gitea and Mattermost are configured over loopback on the control node so their
+# tokens never cross the network. The AAP and EDA API calls are delegated to the
+# operator's workstation, which is the only place the ansible.controller
+# collection and the target's SSH private key exist.
+#
+# Idempotent throughout: re-running bootstrap.sh converges rather than
+# duplicating. Content is adapted from the public Red Hat Demo Platform lab
+# ansible-tmm/aiops-summitlab.
 # =============================================================================
-- name: Demo content wiring
+- name: Demo content and platform configuration
   when: demo_content_enabled | bool
   block:
-    - name: Wait for the AAP API to be reachable
+    - name: Populate Gitea with the demo content
+      ansible.builtin.include_tasks: gitea.yml
+
+    - name: Bootstrap Mattermost
+      ansible.builtin.include_tasks: mattermost.yml
+
+    - name: Wait for the AAP gateway API
       ansible.builtin.uri:
         url: "https://{{ control_public_ip }}/api/gateway/v1/ping/"
         method: GET
         validate_certs: false
         status_code: [200]
-      register: aap_api
-      retries: 60
-      delay: 10
-      until: aap_api is succeeded
+      register: _aap_api
+      retries: "{{ aap_api_wait_retries }}"
+      delay: "{{ aap_api_wait_delay }}"
+      until: _aap_api is succeeded
+      delegate_to: localhost
+      become: false
 
-    # -----------------------------------------------------------------------
-    # Implement below using the AAP configuration collections
-    # (ansible.controller / ansible.eda, or infra.aap_configuration). Create:
-    #   - organization, inventory, and the target host
-    #   - a machine credential (SSH key to the target)
-    #   - credentials for Gitea, Ansible Lightspeed (lightspeed_api_key), and
-    #     the Red Hat AI endpoint (ai_model_endpoint / ai_model_api_key)
-    #   - a project synced from the Gitea 'remediation' repo
-    #   - the three job templates + two workflows described in the lab
-    #   - an EDA project and rulebook activation whose Kafka source points at
-    #     control_private_ip : kafka_port, topic kafka_topic
-    # All credential-bearing tasks must set no_log: true.
-    # -----------------------------------------------------------------------
-    - name: Placeholder - demo content not yet supplied
+    # Checked BEFORE creating anything. Without an attached subscription the
+    # controller happily accepts inventories and groups, then rejects
+    # POST /hosts/ with a 403 - hosts are what consume entitlements. Failing here
+    # avoids a half-built configuration and a misleading permissions error.
+    - name: Check the AAP subscription before creating anything
+      ansible.builtin.uri:
+        url: "https://{{ control_public_ip }}/api/controller/v2/config/"
+        method: GET
+        url_username: "{{ aap_admin_user }}"
+        url_password: "{{ aap_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200]
+      register: _aap_license
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Fail early and actionably if AAP has no usable subscription
+      ansible.builtin.fail:
+        msg: >-
+          {% set li = _aap_license.json.license_info | default({}) %}
+          {% set lt = li.license_type | default('unlicensed') %}
+          AAP has no usable subscription (license_type: {{ lt }},
+          free managed-node slots: {{ li.free_instances | default(0) }}).
+
+          The controller will accept inventories and groups but reject
+          POST /hosts/ with HTTP 403, because hosts consume entitlements - so
+          this stage would fail part-way through.
+
+          Attach one, then re-run scripts/demo_content.sh:
+            1. Open https://{{ control_public_ip }} and log in as
+               {{ aap_admin_user }}
+            2. Choose "Username/password" at the subscription prompt
+            3. Enter your Red Hat login - it fetches your pools directly, no
+               manifest export needed
+
+          No AAP entitlement on your account? The free Red Hat Developer
+          Subscription for Individuals includes one:
+          https://developers.redhat.com/products/ansible/overview
+      when: >-
+        _aap_license.status | default(0) != 200
+        or (_aap_license.json.license_info.license_type | default('unlicensed'))
+           in ['unlicensed', 'UNLICENSED', '']
+        or (_aap_license.json.license_info.free_instances | default(0) | int) < 1
+
+    - name: Report the subscription in use
       ansible.builtin.debug:
         msg: >-
-          demo_content_enabled is true, but no content tasks are implemented in
-          this role. Point demo_content_git_url at your copy of the content and
-          implement the resource-creation tasks. See roles/demo_content/README.md.
+          AAP subscription OK:
+          {{ _aap_license.json.license_info.license_type | default('?') }},
+          {{ _aap_license.json.license_info.free_instances | default('?') }}
+          managed-node slots free.
+
+    - name: Confirm the ansible.controller collection is available
+      ansible.builtin.assert:
+        that:
+          - >-
+            'ansible.controller' in
+            lookup('ansible.builtin.pipe', 'ansible-galaxy collection list 2>/dev/null || true')
+        fail_msg: >-
+          The ansible.controller collection is not on the Ansible collection
+          path. scripts/bootstrap.sh extracts it from the AAP setup bundle in
+          ansible/aap/ and exports ANSIBLE_COLLECTIONS_PATH - run the demo
+          through bootstrap.sh, or install the collection manually.
+        quiet: true
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    # -- everything below talks to the AAP APIs from the workstation ---------
+    - name: Configure AAP
+      delegate_to: localhost
+      become: false
+      # The ansible.controller modules read their connection settings from these
+      # environment variables. Using them rather than module_defaults avoids
+      # depending on the collection's action-group name, and keeps the password
+      # out of every task's arguments.
+      environment:
+        CONTROLLER_HOST: "{{ aap_controller_host }}"
+        CONTROLLER_USERNAME: "{{ aap_admin_user }}"
+        CONTROLLER_PASSWORD: "{{ aap_admin_password }}"
+        CONTROLLER_VERIFY_SSL: "false"
+      block:
+        - name: Create credential types and credentials
+          ansible.builtin.include_tasks: aap_credentials.yml
+
+        - name: Create the inventory and projects
+          ansible.builtin.include_tasks: aap_inventory_projects.yml
+
+        - name: Create the job templates
+          ansible.builtin.include_tasks: aap_job_templates.yml
+
+        - name: Create the workflows
+          ansible.builtin.include_tasks: aap_workflows.yml
+
+    - name: Configure Event-Driven Ansible
+      ansible.builtin.include_tasks: eda.yml
+
+    - name: Summarise the demo environment
+      ansible.builtin.debug:
+        msg: "{{ lookup('ansible.builtin.template', 'summary.txt.j2').split('\n') }}"
+
+  rescue:
+    - name: Show the task that actually failed
+      ansible.builtin.debug:
+        msg:
+          - "Failed task : {{ ansible_failed_task.name | default('unknown') }}"
+          - "Message     : {{ ansible_failed_result.msg | default('none') | truncate(500, true) }}"
+
+    - name: Explain what failed and how to retry
+      ansible.builtin.fail:
+        msg: >-
+          Demo content configuration failed at
+          "{{ ansible_failed_task.name | default('an unknown task') }}".
+          {% set m = ansible_failed_result.msg | default('') %}
+          {% if '403' in m and '/hosts/' in m %}
+          The controller refused to create the inventory host. That is a
+          SUBSCRIPTION limit, not a permissions problem: hosts consume
+          entitlements, which is why the inventory and group above succeeded.
+          Attach a subscription at https://{{ control_public_ip }}
+          (choose Username/password, enter your Red Hat login) and re-run
+          scripts/demo_content.sh.
+          {% elif '401' in m or 'credential' in m | lower %}
+          Authentication to the AAP API failed. Check that AAP_ADMIN_PASSWORD
+          matches the admin password AAP was installed with.
+          {% elif 'ansible.controller' in m %}
+          The ansible.controller collection is not on ANSIBLE_COLLECTIONS_PATH.
+          Run through scripts/demo_content.sh, which extracts it from the AAP
+          bundle in ansible/aap/.
+          {% else %}
+          See the failed task and message above.
+          {% endif %}
+          The infrastructure and platform are unaffected and this stage is
+          safely re-runnable: ./scripts/demo_content.sh. To skip it entirely, set
+          demo_content_enabled=false in ansible/group_vars/all.yml.

@@ -1,0 +1,143 @@
+---
+# =============================================================================
+# Attach the Ansible Automation Platform subscription.
+#
+# Why this exists: without an attached subscription the controller accepts writes
+# to inventories and groups but rejects POST /hosts/ with HTTP 403, because HOSTS
+# are what consume entitlements. The failure therefore appears several steps into
+# the demo_content stage and looks like a permissions problem rather than a
+# licensing one. Attaching it here, while the Red Hat credentials are already in
+# hand, removes the manual UI step and that confusing failure.
+#
+# Best-effort: if the account has no AAP pool, or the API shape differs, this
+# warns with exact manual instructions rather than failing the build. The
+# demo_content stage checks the subscription up front and will stop early with
+# actionable guidance if it is still missing.
+# =============================================================================
+- name: Check the current subscription state
+  ansible.builtin.uri:
+    url: "https://{{ control_public_ip }}/api/controller/v2/config/"
+    method: GET
+    url_username: "{{ aap_admin_user }}"
+    url_password: "{{ aap_admin_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    status_code: [200]
+  register: aap_config
+  retries: 30
+  delay: 10
+  until: aap_config.status | default(0) == 200
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Record whether a usable subscription is already attached
+  ansible.builtin.set_fact:
+    aap_license_type: "{{ aap_config.json.license_info.license_type | default('unlicensed') }}"
+    aap_free_instances: "{{ aap_config.json.license_info.free_instances | default(0) }}"
+
+- name: Report the existing subscription
+  ansible.builtin.debug:
+    msg: >-
+      AAP subscription: {{ aap_license_type }},
+      {{ aap_free_instances }} managed-node slots free.
+
+- name: Attach a subscription
+  when: aap_license_type in ['unlicensed', 'UNLICENSED', '']
+  block:
+    - name: Ask Red Hat which subscription pools this account has
+      ansible.builtin.uri:
+        url: "https://{{ control_public_ip }}/api/controller/v2/config/subscriptions/"
+        method: POST
+        url_username: "{{ aap_admin_user }}"
+        url_password: "{{ aap_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          subscriptions_username: "{{ rh_registry_username }}"
+          subscriptions_password: "{{ rh_registry_password }}"
+        validate_certs: false
+        status_code: [200, 202]
+        timeout: 120
+      register: aap_pools
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Pick the pool with the most managed-node capacity
+      # Several pools can be returned (trials, developer, enterprise). The one
+      # with the largest instance_count is the least likely to run out mid-demo.
+      ansible.builtin.set_fact:
+        aap_pool: >-
+          {{ (aap_pools.json | default([]))
+             | selectattr('instance_count', 'defined')
+             | sort(attribute='instance_count', reverse=true)
+             | list | first | default({}) }}
+      when: aap_pools.status | default(0) in [200, 202]
+
+    - name: Attach the chosen pool
+      ansible.builtin.uri:
+        url: "https://{{ control_public_ip }}/api/controller/v2/config/attach/"
+        method: POST
+        url_username: "{{ aap_admin_user }}"
+        url_password: "{{ aap_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          pool_id: "{{ aap_pool.pool_id }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+        timeout: 120
+      register: aap_attach
+      failed_when: false
+      when:
+        - aap_pool | default({}) | length > 0
+        - aap_pool.pool_id is defined
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Confirm the subscription took effect
+      ansible.builtin.uri:
+        url: "https://{{ control_public_ip }}/api/controller/v2/config/"
+        method: GET
+        url_username: "{{ aap_admin_user }}"
+        url_password: "{{ aap_admin_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200]
+      register: aap_config_after
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg: >-
+          Subscription now:
+          {{ aap_config_after.json.license_info.license_type | default('unlicensed') }},
+          {{ aap_config_after.json.license_info.free_instances | default(0) }}
+          managed-node slots free.
+
+    - name: Explain how to attach it by hand if automation could not
+      ansible.builtin.debug:
+        msg:
+          - "WARNING - could not attach an AAP subscription automatically."
+          - "Pools lookup HTTP: {{ aap_pools.status | default('no response') }}"
+          - "Attach HTTP      : {{ aap_attach.status | default('not attempted') }}"
+          - ""
+          - "The demo content stage cannot add inventory hosts without one - the"
+          - "controller returns 403 on POST /hosts/ because hosts consume"
+          - "entitlements. Attach it manually, then re-run scripts/demo_content.sh:"
+          - "  1. Open https://{{ control_public_ip }} and log in as {{ aap_admin_user }}"
+          - "  2. Choose Username/password when prompted for a subscription"
+          - "  3. Enter your Red Hat login; it fetches your pools directly"
+          - ""
+          - "If your account has no AAP entitlement, the free Red Hat Developer"
+          - "Subscription for Individuals includes one:"
+          - "  https://developers.redhat.com/products/ansible/overview"
+      when: >-
+        (aap_config_after.json.license_info.license_type | default('unlicensed'))
+        in ['unlicensed', 'UNLICENSED', '']

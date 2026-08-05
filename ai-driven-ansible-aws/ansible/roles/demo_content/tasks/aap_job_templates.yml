@@ -1,0 +1,146 @@
+---
+# =============================================================================
+# AAP job templates as code.
+#
+# Names match the Red Hat Demo Platform lab exactly (emoji included) so the
+# published showroom modules can be followed verbatim against this environment.
+# The names live in defaults/main.yml and are injected into the two templates
+# that create other templates, so there is a single source of truth and no risk
+# of an emoji mismatch between the IaC and the playbooks in Git.
+# =============================================================================
+
+- name: Create the incident trigger and reset job templates
+  ansible.controller.job_template:
+    name: "{{ item.name }}"
+    organization: "{{ demo_organization }}"
+    job_type: run
+    inventory: "{{ demo_inventory_name }}"
+    project: "{{ demo_project_name }}"
+    playbook: "{{ item.playbook }}"
+    credentials:
+      - "{{ demo_machine_credential }}"
+    execution_environment: "{{ demo_execution_environment }}"
+    become_enabled: true
+    description: "{{ item.description }}"
+    state: present
+  loop:
+    - name: "{{ jt_break_apache }}"
+      playbook: playbooks/httpd_break.yml
+      description: "Injects an invalid directive into httpd.conf. Starts the demo."
+    - name: "{{ jt_restore_apache }}"
+      playbook: playbooks/httpd_fix.yml
+      description: "Resets Apache to a known-good state without running the AIOps workflows."
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create the enrichment job templates
+  ansible.controller.job_template:
+    name: "{{ item.name }}"
+    organization: "{{ demo_organization }}"
+    job_type: run
+    inventory: "{{ demo_inventory_name }}"
+    project: "{{ demo_project_name }}"
+    playbook: "{{ item.playbook }}"
+    credentials: "{{ item.credentials }}"
+    execution_environment: "{{ demo_execution_environment }}"
+    become_enabled: "{{ item.become | default(false) }}"
+    extra_vars: "{{ item.extra_vars | default({}) }}"
+    description: "{{ item.description }}"
+    state: present
+  loop:
+    - name: "{{ jt_status_check }}"
+      playbook: playbooks/systemd_check_status.yml
+      credentials: ["{{ demo_machine_credential }}"]
+      become: true
+      description: "Collects journal logs from the failing host and builds the AI prompts."
+
+    - name: "{{ jt_ai_analyze }}"
+      playbook: playbooks/ai_analyze_incident.yml
+      credentials: ["{{ ai_credential_name }}"]
+      description: "Asks Red Hat AI for a root cause analysis and a remediation instruction."
+
+    - name: "{{ jt_notify_mattermost }}"
+      playbook: playbooks/notify_mattermost.yml
+      credentials: ["{{ mattermost_credential_name }}"]
+      description: "Posts the incident logs and AI RCA to the chat channel (ITSM stand-in)."
+
+    - name: "{{ jt_build_lightspeed }}"
+      playbook: playbooks/build_lightspeed_job_template.yml
+      credentials: ["{{ aap_credential_name }}"]
+      description: "Turns the AI-generated prompt into a reviewable survey on the remediation workflow."
+      extra_vars:
+        generator_jt_name: "{{ jt_lightspeed_generate }}"
+        remediation_workflow_name: "{{ remediation_workflow_name }}"
+        demo_organization: "{{ demo_organization }}"
+        demo_inventory: "{{ demo_inventory_name }}"
+        demo_project: "{{ demo_project_name }}"
+        demo_execution_environment: "{{ demo_execution_environment }}"
+        ai_credential_name: "{{ ai_credential_name }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create the remediation job templates
+  ansible.controller.job_template:
+    name: "{{ item.name }}"
+    organization: "{{ demo_organization }}"
+    job_type: run
+    inventory: "{{ demo_inventory_name }}"
+    project: "{{ demo_project_name }}"
+    playbook: "{{ item.playbook }}"
+    credentials: "{{ item.credentials }}"
+    execution_environment: "{{ demo_execution_environment }}"
+    extra_vars: "{{ item.extra_vars | default({}) }}"
+    description: "{{ item.description }}"
+    state: present
+  loop:
+    - name: "{{ jt_lightspeed_generate }}"
+      playbook: playbooks/generate_remediation_playbook.yml
+      credentials: ["{{ ai_credential_name }}"]
+      description: "Generates an Ansible Playbook from the human-reviewed prompt."
+      extra_vars:
+        lightspeed_mode: "{{ lightspeed_mode }}"
+
+    - name: "{{ jt_commit_to_gitea }}"
+      playbook: playbooks/commit_to_gitea.yml
+      credentials: ["{{ gitea_credential_name }}"]
+      description: "Commits the AI-generated playbook to Git as the audit trail."
+      extra_vars:
+        gitea_playbook_repo: "{{ demo_playbook_repo }}"
+        gitea_playbook_file: "{{ demo_generated_playbook_file }}"
+        gitea_branch: "{{ gitea_branch }}"
+
+    - name: "{{ jt_build_remediation }}"
+      playbook: playbooks/build_httpd_remediation_template.yml
+      credentials: ["{{ aap_credential_name }}"]
+      description: "Creates the job template that applies the AI-generated fix."
+      extra_vars:
+        remediation_jt_name: "{{ jt_execute_remediation }}"
+        demo_organization: "{{ demo_organization }}"
+        demo_inventory: "{{ demo_inventory_name }}"
+        demo_playbook_project: "{{ demo_playbook_project_name }}"
+        demo_machine_credential: "{{ demo_machine_credential }}"
+        demo_execution_environment: "{{ demo_execution_environment }}"
+        gitea_playbook_file: "{{ demo_generated_playbook_file }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Pre-create the remediation execution job template
+  # The remediation workflow recreates this at demo time - creating it up front
+  # means the environment is demonstrably complete straight after bootstrap,
+  # and a smoke test can run the whole chain without the AI step.
+  ansible.controller.job_template:
+    name: "{{ jt_execute_remediation }}"
+    organization: "{{ demo_organization }}"
+    job_type: run
+    inventory: "{{ demo_inventory_name }}"
+    project: "{{ demo_playbook_project_name }}"
+    playbook: "{{ demo_generated_playbook_file }}"
+    credentials:
+      - "{{ demo_machine_credential }}"
+    execution_environment: "{{ demo_execution_environment }}"
+    become_enabled: true
+    ask_limit_on_launch: true
+    description: >-
+      Applies the AI-generated remediation playbook. Launched manually with a
+      limit so the operator controls blast radius.
+    state: present

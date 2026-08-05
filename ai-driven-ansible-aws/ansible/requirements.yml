@@ -5,8 +5,11 @@ collections:
   - name: ansible.posix          # firewalld
   - name: containers.podman      # podman_network, podman_container
 
-# The (optional, default-off) demo_content role additionally uses AAP config
-# collections. Install these from Red Hat Automation Hub if you enable it:
-#   - name: awx.awx              # or ansible.controller (Automation Hub)
-#   - name: ansible.eda
-#   - name: infra.aap_configuration
+# The demo_content role also needs ansible.controller to configure AAP as code.
+# It is NOT listed here on purpose: it ships inside the AAP containerized setup
+# bundle in ansible/aap/, and scripts/bootstrap.sh extracts it to
+# ansible/.aap-collections/ and puts that on ANSIBLE_COLLECTIONS_PATH. That
+# avoids requiring a Red Hat Automation Hub token just to configure the demo.
+#
+# Event-Driven Ansible is configured through its REST API (ansible.builtin.uri)
+# because the bundle does not include ansible.eda.

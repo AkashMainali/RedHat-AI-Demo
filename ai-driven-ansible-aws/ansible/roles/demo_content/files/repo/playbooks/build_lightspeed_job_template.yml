@@ -1,0 +1,70 @@
+---
+# =============================================================================
+# Enrichment step 4 - automation writing automation.
+#
+# Takes the AI's remediation instruction and turns it into a real, launchable
+# survey on the Remediation Workflow. This is the handoff between the two
+# workflows and the human-in-the-loop checkpoint: an operator reviews the
+# AI-authored prompt before anything is generated or applied.
+#
+# The workflow nodes themselves are created by the environment's IaC, so this
+# playbook only patches the survey - it never rewires the graph.
+#
+# Adapted from ansible-tmm/aiops-summitlab (aap_create_job_template.yml).
+# =============================================================================
+- name: Build the Lightspeed prompt survey from the AI output
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Shown pre-filled in the required field. The operator can accept this
+    # known-good prompt or paste in the AI's version from the reference field.
+    human_reviewed_default: >-
+      For all hosts, use become true, remove the line containing
+      InvalidDirectiveHere from /etc/httpd/conf/httpd.conf, then restart httpd.
+
+  tasks:
+    - name: Validate that the AI produced an instruction
+      ansible.builtin.assert:
+        that:
+          - ai_fix_instruction | default('') | length > 0
+        fail_msg: >-
+          No AI instruction found. This job template expects to run after
+          "Red Hat AI: Analyze Incident" in the enrichment workflow.
+        quiet: true
+
+    - name: Show the prompt the AI produced
+      ansible.builtin.debug:
+        msg: "AI-authored Lightspeed prompt: {{ ai_fix_instruction }}"
+
+    - name: Ensure the remediation generator job template exists
+      # Names arrive as extra vars from the job template so the IaC stays the
+      # single source of truth for them.
+      ansible.controller.job_template:
+        name: "{{ generator_jt_name }}"
+        job_type: run
+        organization: "{{ demo_organization | default('Default') }}"
+        inventory: "{{ demo_inventory | default('lab-inventory') }}"
+        project: "{{ demo_project | default('AI-EDA') }}"
+        playbook: playbooks/generate_remediation_playbook.yml
+        credentials:
+          - "{{ ai_credential_name | default('Demo AI Endpoint') }}"
+        execution_environment: "{{ demo_execution_environment | default('Default execution environment') }}"
+        state: present
+        validate_certs: false
+
+    - name: Attach the AI-generated prompt as the remediation workflow survey
+      ansible.controller.workflow_job_template:
+        name: "{{ remediation_workflow_name | default('Remediation Workflow') }}"
+        organization: "{{ demo_organization | default('Default') }}"
+        state: present
+        survey_enabled: true
+        survey_spec: "{{ lookup('ansible.builtin.template', 'survey.j2') | from_json }}"
+        validate_certs: false
+
+    - name: Report the handoff
+      ansible.builtin.debug:
+        msg: >-
+          Remediation Workflow survey updated with the AI-generated prompt.
+          Launch it from Automation Execution to continue the demo.

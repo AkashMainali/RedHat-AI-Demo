@@ -88,6 +88,8 @@ terraform -chdir="${TF_DIR}" destroy "${destroy_args[@]}"
 
 # --- 3. tidy generated local files ------------------------------------------
 rm -f "${ANSIBLE_DIR}/inventory.ini" "${ANSIBLE_DIR}/.known_hosts"
+# Collections extracted from the AAP setup bundle; re-extracted on next run.
+rm -rf "${ANSIBLE_DIR}/.aap-collections"
 log "Removed generated inventory and known_hosts."
 
 if [[ "${DELETE_KEY}" -eq 1 ]]; then
