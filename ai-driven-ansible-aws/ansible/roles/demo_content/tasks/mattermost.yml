@@ -168,6 +168,9 @@
   no_log: true
 
 - name: Post a smoke-test message so the channel is not empty at demo time
+  # Only on FIRST creation of the webhook. Posting on every run left the channel
+  # with a stack of identical "Environment ready" notices, which is clutter in the
+  # exact place the audience is meant to be reading incident logs and the AI RCA.
   ansible.builtin.uri:
     url: "{{ mattermost_webhook_url }}"
     method: POST
@@ -181,6 +184,7 @@
             AIOps demo wiring complete. Incident logs and AI root cause analysis
             will appear in this channel when the enrichment workflow runs.
     status_code: 200
+  when: _mm_hook_new.changed | default(false)
   no_log: true
 
 - name: Report the Mattermost state

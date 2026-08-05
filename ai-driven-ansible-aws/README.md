@@ -434,6 +434,13 @@ generated inventory. Add `--delete-ssh-key` to also remove the local keypair.
   fetches the activation's own log and names the likely cause. Otherwise check
   Automation Decisions in the UI. Next most common: Kafka unreachable — confirm
   `podman ps` shows `kafka` and that `<control-private-ip>:9092` is listening.
+- **Activation is running, the rule fires, but no workflow starts** — check the
+  activation log for
+  `Variables ansible_eda are not allowed on launch`. `ansible-rulebook` passes the
+  matched event as an `ansible_eda` extra variable, so the workflow needs
+  **Prompt on Launch → Extra Variables** (`ask_variables_on_launch: true`). The
+  IaC sets this on both workflows; re-run `./scripts/demo_content.sh` if a
+  workflow predates it. Symptom: Apache breaks but nothing happens afterwards.
 - **Mattermost user creation fails with `api.user.create_user.no_open_server`
   (HTTP 403)** — Mattermost 9+ disables open signups, which blocks the
   unauthenticated first-user bootstrap. The Quadlet unit sets

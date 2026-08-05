@@ -61,6 +61,10 @@
         state: present
         survey_enabled: true
         survey_spec: "{{ lookup('ansible.builtin.template', 'survey.j2') | from_json }}"
+        # Restated so patching the survey mid-demo cannot regress it. Without
+        # extra variables prompted on launch, the controller rejects launches that
+        # carry an 'ansible_eda' variable.
+        ask_variables_on_launch: true
         validate_certs: false
 
     - name: Report the handoff

@@ -18,6 +18,14 @@
       prepares a reviewable remediation prompt.
     inventory: "{{ demo_inventory_name }}"
     survey_enabled: false
+    # REQUIRED for EDA to launch this. ansible-rulebook passes the matched event
+    # to the workflow as an 'ansible_eda' extra variable, and the controller
+    # rejects the launch with
+    #   "Variables ansible_eda are not allowed on launch"
+    # unless extra variables are prompted on launch. Without this the rulebook
+    # fires correctly but the workflow never starts, so breaking Apache appears to
+    # do nothing.
+    ask_variables_on_launch: true
     state: present
     workflow_nodes:
       - identifier: status_check
@@ -68,6 +76,9 @@
     inventory: "{{ demo_inventory_name }}"
     survey_enabled: true
     survey_spec: "{{ lookup('ansible.builtin.template', 'initial_survey.json.j2') | from_json }}"
+    # Launched by a human via the survey, but this also lets the enrichment
+    # workflow's artifacts flow in when the two are chained.
+    ask_variables_on_launch: true
     state: present
     workflow_nodes:
       - identifier: generate
