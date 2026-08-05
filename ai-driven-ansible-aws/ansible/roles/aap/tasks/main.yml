@@ -19,6 +19,11 @@
         state: present
       become: true
 
+    - name: Install Ansible (required for ansible-vault and the AAP containerized installer)
+      ansible.builtin.dnf:
+        name: ansible-core
+        state: present
+
     - name: Create encrypted vault file on control node
       block:
         - name: Create vault password file on control node
@@ -147,11 +152,6 @@
         permanent: true
         immediate: true
         state: enabled
-
-    - name: Install Ansible (required for AAP containerized installer)
-      ansible.builtin.dnf:
-        name: ansible-core
-        state: present
 
     - name: Enable lingering for lab-user (required for user-scope systemd services)
       ansible.builtin.command:
