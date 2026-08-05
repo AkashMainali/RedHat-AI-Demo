@@ -45,8 +45,15 @@ SAFE & IDEMPOTENT: re-running converges; it never creates duplicate servers.
   --ssh-key PATH        SSH private key to use/create (default: ${SSH_KEY_PATH})
   --skip-ansible        Provision infrastructure only (same as infra_only.sh)
   --skip-terraform      Configure only; requires existing infrastructure
-  --tags TAGS           Run only these site.yml tags
-                        (base|target|services|ai|aap|demo_content)
+  --tags TAGS           Run only these site.yml tags. One of:
+                          base          RHSM registration and base packages
+                          target        httpd + Filebeat on the target node
+                          services      Kafka, Gitea, Mattermost containers
+                          ai            local CPU inference endpoint + models
+                          aap           the AAP containerized install (20-40 min)
+                          subscription  attach the AAP subscription (seconds)
+                          demo_content  Gitea content + AAP/EDA configuration
+                        'demo_content' implies 'ai' - see the note below.
   -h, --help            Show this help
 
 Faster alternatives for common cases:
@@ -136,6 +143,16 @@ ensure_aap_collections require
 # --- 8. configure ------------------------------------------------------------
 run_args=()
 if [[ -n "${TAGS}" ]]; then
+  # demo_content writes the AI model ids into AAP's credential, so the endpoint
+  # serving those models must be reconciled in the same run. Selecting
+  # demo_content alone would leave the credential advertising a model that was
+  # never pulled, which fails later with "model 'x' not found". Same reasoning as
+  # demo_content.sh, applied here so --tags behaves identically.
+  if [[ ",${TAGS}," == *",demo_content,"* && ",${TAGS}," != *",ai,"* ]]; then
+    TAGS="${TAGS},ai"
+    log "Added the 'ai' tag: demo_content declares which models it needs, so the"
+    log "inference endpoint is reconciled in the same run."
+  fi
   run_args+=(--tags "${TAGS}")
   log "Running site.yml --tags ${TAGS}"
 else

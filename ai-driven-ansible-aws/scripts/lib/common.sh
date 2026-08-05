@@ -40,7 +40,7 @@ scrub_secrets() {
         RH_REGISTRY_USERNAME RH_REGISTRY_PASSWORD LAB_USER_PASSWORD \
         AAP_ADMIN_PASSWORD GITEA_ADMIN_PASSWORD MM_ADMIN_PASSWORD \
         LIGHTSPEED_API_KEY AI_MODEL_ENDPOINT AI_MODEL_API_KEY AI_MODEL_ID \
-        VAULT_PASSWORD 2>/dev/null || true
+        AI_CODEGEN_MODEL_ID HF_TOKEN VAULT_PASSWORD 2>/dev/null || true
   # The encrypted vault files stay on the control node so re-runs work.
 }
 trap_scrub() { trap scrub_secrets EXIT INT TERM; }
@@ -250,6 +250,8 @@ $(ok "DONE")  Demo content is configured.
   Webserver    : http://${TARGET_PUBLIC_IP}
 
   AI inference : ${AI_BACKEND:-ollama}${AI_MODEL_ENDPOINT:+ (${AI_MODEL_ENDPOINT})}
+                 RCA model     : ${AI_MODEL_ID:-granite3.1-dense:2b}
+                 Codegen model : ${AI_CODEGEN_MODEL_ID:-${AI_MODEL_ID:-qwen2.5-coder:3b}}
 
   Run the demo:
     1. AAP > Automation Execution > Templates > launch "❌ Break Apache"

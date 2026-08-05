@@ -26,6 +26,62 @@
     - name: Bootstrap Mattermost
       ansible.builtin.include_tasks: mattermost.yml
 
+    # Checked from the CONTROL NODE, because that is where the AAP execution
+    # environments will call the endpoint from. Done before any AAP object is
+    # created: the AI credential records these model ids, and a credential that
+    # advertises a model the endpoint does not serve fails mid-demo with
+    # "model 'x' not found" - long after this stage reported success.
+    - name: Ask the AI endpoint which models it serves
+      ansible.builtin.uri:
+        url: "{{ ai_model_url | regex_replace('/$', '') }}/models"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ ai_model_api_key | default('not-required') }}"
+        validate_certs: false
+        status_code: [200]
+        timeout: 30
+      register: _ai_served
+      retries: 6
+      delay: 10
+      until: _ai_served.status | default(0) == 200
+      failed_when: false
+
+    - name: Work out which configured models are missing
+      ansible.builtin.set_fact:
+        _ai_served_ids: "{{ _ai_served.json.data | default([]) | map(attribute='id') | list }}"
+        _ai_wanted_ids: >-
+          {{ [ai_model_id, ai_codegen_model_id | default('', true)]
+             | select | unique | list }}
+
+    - name: Report the endpoint's model inventory
+      ansible.builtin.debug:
+        msg: >-
+          AI endpoint {{ ai_model_url }} serves {{ _ai_served_ids }};
+          the demo needs {{ _ai_wanted_ids }}.
+
+    - name: Fail if the endpoint does not serve a model the demo will request
+      ansible.builtin.fail:
+        msg: >-
+          {% set missing = _ai_wanted_ids | reject('in', _ai_served_ids) | list %}
+          The AI endpoint does not serve: {{ missing }}.
+          It serves: {{ _ai_served_ids | default('nothing - endpoint unreachable') }}.
+          {% if ai_backend | default('ollama') == 'ollama' %}
+          Pull the missing model(s) on the control node:
+          {% for m in missing %}
+            sudo podman exec ollama ollama pull {{ m }}
+          {% endfor %}
+          Or re-run with the AI tag, which pulls them for you:
+            ./scripts/bootstrap.sh --tags ai
+          {% else %}
+          This is an external endpoint, so the model must be deployed there.
+          Check the exact id it reports and update the configuration:
+            curl -sSk {{ ai_model_url }}/models -H "Authorization: Bearer <token>"
+          then re-point the demo with ./scripts/set-ai-endpoint.sh
+          {% endif %}
+      when: >-
+        _ai_served.status | default(0) != 200
+        or (_ai_wanted_ids | reject('in', _ai_served_ids) | list | length > 0)
+
     - name: Wait for the AAP gateway API
       ansible.builtin.uri:
         url: "https://{{ control_public_ip }}/api/gateway/v1/ping/"

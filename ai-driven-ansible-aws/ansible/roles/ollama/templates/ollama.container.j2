@@ -19,7 +19,11 @@ Environment=OLLAMA_HOST=0.0.0.0:11434
 # Keep the model resident so demo inference is not paying cold-start each call.
 Environment=OLLAMA_KEEP_ALIVE=-1
 Environment=OLLAMA_NUM_PARALLEL=1
-Environment=OLLAMA_MAX_LOADED_MODELS=1
+# Two models stay resident: the chat model for the root cause analysis and the
+# code model for playbook generation. With a limit of 1 the demo would evict and
+# reload between those two steps, adding a visible stall in the middle of the
+# run. Two small models together are a few GB, comfortable on this node.
+Environment=OLLAMA_MAX_LOADED_MODELS=2
 
 [Service]
 Restart=always

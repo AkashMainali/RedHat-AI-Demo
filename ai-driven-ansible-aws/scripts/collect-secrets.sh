@@ -107,11 +107,21 @@ _collect_ai_secrets() {
     if ! _skip_if_set AI_MODEL_API_KEY; then
       _read_secret "  Red Hat AI model API key" AI_MODEL_API_KEY 0 0
     fi
+    # Optional second model for playbook generation. A capable endpoint handles
+    # both jobs with one model; the split exists only to work around small
+    # CPU-hosted models, so the default here is "reuse the same one".
+    if ! _skip_if_set AI_CODEGEN_MODEL_ID; then
+      _read_plain "  Model id for code generation (Enter = same model)" \
+                  AI_CODEGEN_MODEL_ID "${AI_MODEL_ID}"
+    fi
   else
     printf '   -> Skipped. Using the local CPU endpoint on the control node.\n' > /dev/tty
+    printf '      It serves two models: a chat model for the root cause analysis\n' > /dev/tty
+    printf '      and a code model for playbook generation. Both are pulled for you.\n' > /dev/tty
   fi
   export AI_MODEL_ENDPOINT
   export AI_MODEL_ID="${AI_MODEL_ID:-}"
+  export AI_CODEGEN_MODEL_ID="${AI_CODEGEN_MODEL_ID:-}"
   export AI_MODEL_API_KEY="${AI_MODEL_API_KEY:-not-required}"
 
   # --- Ansible Lightspeed (OPTIONAL) ----------------------------------------

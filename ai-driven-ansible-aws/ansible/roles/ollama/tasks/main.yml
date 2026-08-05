@@ -67,13 +67,16 @@
   changed_when: true
   timeout: 1800
 
-- name: Warm the model so the first demo inference is not a cold start
+- name: Warm each model so no demo step pays a cold start
+  # Both models, because the demo calls the chat model for the RCA and the code
+  # model for generation. Warming only the first leaves a 30-90s stall in the
+  # middle of the run, right when the audience is watching.
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ ollama_port }}/v1/chat/completions"
     method: POST
     body_format: json
     body:
-      model: "{{ ollama_model }}"
+      model: "{{ item }}"
       messages:
         - role: user
           content: "Reply with the single word: ready"
@@ -81,6 +84,9 @@
       temperature: 0
     status_code: 200
     timeout: 300
+  loop: "{{ [ollama_model, ollama_codegen_model] | select | unique | list }}"
+  loop_control:
+    label: "{{ item }}"
   register: ollama_warm
   retries: 3
   delay: 10

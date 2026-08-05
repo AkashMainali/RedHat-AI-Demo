@@ -2,7 +2,7 @@
 # =============================================================================
 # demo_content.sh - configure ONLY the demo content. The fast iteration path.
 #
-# Runs site.yml with --tags demo_content, which:
+# Runs site.yml with --tags demo_content,ai which:
 #   * pushes ansible/roles/demo_content/files/repo/ into Gitea
 #   * bootstraps the Mattermost team and incoming webhook
 #   * creates the AAP credentials, inventory, projects, 10 job templates and
@@ -97,11 +97,18 @@ render_inventory "${SSH_KEY_PATH}"
 wait_for_ssh "${CONTROL_PUBLIC_IP}" "${SSH_USER}" "${SSH_KEY_PATH}" 12
 ensure_aap_collections require
 
-# --- 6. run only the demo_content stage -------------------------------------
+# --- 6. run the demo_content stage (plus the local AI endpoint) --------------
 # --limit control because every demo_content task either runs on the control node
 # or is delegated to this workstation; skipping the target play saves a fact
 # gather for no loss.
-run_args=(--tags demo_content --limit control)
+#
+# The 'ai' tag is included deliberately. demo_content writes the model ids into
+# AAP's AI credential, so if the model list changes the local endpoint has to be
+# reconciled in the same run - otherwise the credential advertises a model that
+# was never pulled and the demo fails at generation time with
+# "model 'x' not found". The ollama role is idempotent and quick once the models
+# are present. It is skipped entirely for external endpoints.
+run_args=(--tags demo_content,ai --limit control)
 [[ "${CHECK_MODE}" -eq 1 ]] && run_args+=(--check --diff)
 [[ -n "${VERBOSE}" ]] && run_args+=("${VERBOSE}")
 [[ ${#EXTRA_ARGS[@]} -gt 0 ]] && run_args+=("${EXTRA_ARGS[@]}")
@@ -112,7 +119,7 @@ if [[ "${CHECK_MODE}" -eq 1 ]]; then
   warn "seeing which files would change, not as a full dry run."
 fi
 
-log "Running site.yml --tags demo_content"
+log "Running site.yml --tags demo_content,ai"
 run_site "${run_args[@]}"
 
 [[ "${CHECK_MODE}" -eq 1 ]] || print_demo_summary

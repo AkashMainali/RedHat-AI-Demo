@@ -500,6 +500,13 @@ generated inventory. Add `--delete-ssh-key` to also remove the local keypair.
   endpoint serves. Check with
   `curl -sSk <endpoint>/v1/models -H "Authorization: Bearer $TOKEN"`, or just run
   `scripts/set-ai-endpoint.sh`, which lists the valid ids for you.
+- **`model 'x' not found` (HTTP 404) from the AI endpoint** — the model is not
+  pulled. `demo_content.sh` runs `--tags demo_content,ai` so the local endpoint is
+  reconciled in the same pass, and the stage now verifies the endpoint actually
+  serves every configured model *before* creating any AAP object. If you hit it,
+  pull it directly:
+  `sudo podman exec ollama ollama pull <model>` on the control node, or
+  `./scripts/bootstrap.sh --tags ai`.
 - **`cannot unmarshal string into Go struct field ... max_tokens of type int`** —
   a numeric request field was sent as a JSON string. Ollama is written in Go and
   unmarshals strictly; OpenAI and vLLM coerce silently, so this only shows up
