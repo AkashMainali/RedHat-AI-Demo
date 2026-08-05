@@ -74,6 +74,15 @@ if [[ -z "${AI_MODEL_ID:-}" ]]; then
 fi
 [[ -n "${AI_MODEL_ID}" ]] || die "A model id is required."
 
+# Optional second model for the playbook-generation step. A capable endpoint
+# (OpenShift AI serving Granite 8B, for instance) handles both jobs with one
+# model - the split only exists to work around small CPU-hosted models.
+if [[ -z "${AI_CODEGEN_MODEL_ID:-}" ]]; then
+  printf 'Separate model for code generation? Enter to use %s: ' "${AI_MODEL_ID}" >&2
+  IFS= read -r AI_CODEGEN_MODEL_ID
+  AI_CODEGEN_MODEL_ID="${AI_CODEGEN_MODEL_ID:-${AI_MODEL_ID}}"
+fi
+
 if [[ -z "${AAP_ADMIN_PASSWORD:-}" ]]; then
   printf 'AAP admin password (hidden) [redhat]: ' >&2
   IFS= read -rs AAP_ADMIN_PASSWORD
@@ -81,7 +90,7 @@ if [[ -z "${AAP_ADMIN_PASSWORD:-}" ]]; then
   AAP_ADMIN_PASSWORD="${AAP_ADMIN_PASSWORD:-redhat}"
 fi
 
-export AI_MODEL_ENDPOINT AI_MODEL_ID AI_MODEL_API_KEY AAP_ADMIN_PASSWORD
+export AI_MODEL_ENDPOINT AI_MODEL_ID AI_CODEGEN_MODEL_ID AI_MODEL_API_KEY AAP_ADMIN_PASSWORD
 
 # --- ansible.controller comes from the AAP setup bundle ---------------------
 AAP_COLLECTIONS_DIR="${ANSIBLE_DIR}/.aap-collections"
@@ -108,6 +117,7 @@ $(printf '\033[1;32mDONE\033[0m')  The demo now uses your endpoint.
 
   Endpoint : ${AI_MODEL_ENDPOINT}
   Model    : ${AI_MODEL_ID}
+  Codegen  : ${AI_CODEGEN_MODEL_ID}
 
 Nothing else to change - every AI job template reads this credential. Re-run the
 demo from "❌ Break Apache" to see it in action.

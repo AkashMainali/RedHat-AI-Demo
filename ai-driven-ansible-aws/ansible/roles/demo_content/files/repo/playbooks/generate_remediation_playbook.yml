@@ -22,11 +22,44 @@
   vars:
     _mode: "{{ lightspeed_mode | default('local') }}"
     _endpoint: "{{ ai_model_url | default('') | regex_replace('/$', '') }}"
-    _model: "{{ ai_model_id | default('granite3.1-dense:2b') }}"
+    # Code generation is a different job from summarising logs. A small general
+    # chat model can write a decent root cause analysis but will not reliably
+    # emit valid YAML, so this step can use its own model. Falls back to the
+    # RCA model when ai_codegen_model_id is unset.
+    _model: >-
+      {{ ai_codegen_model_id | default('', true)
+         | default(ai_model_id | default('granite3.1-dense:2b'), true) }}
     # Set to true only if you need a guaranteed-green live demo. When the model
     # returns YAML that will not parse, the run substitutes a known-good
     # playbook instead of failing. Off by default so failures stay visible.
     _allow_fallback: "{{ allow_fallback_playbook | default(false) | bool }}"
+    # A worked example steers a small model far more effectively than
+    # instructions alone. Showing the exact shape wanted - list of one play,
+    # FQCNs, no fences - cuts the "here is your playbook:" preamble that makes
+    # the output unparseable.
+    _system_codegen: |
+      You generate Ansible Playbooks. Output ONLY valid YAML and nothing else:
+      no prose, no explanation, no markdown code fences.
+
+      Rules:
+      - the top level is a LIST containing exactly one play
+      - the play sets "hosts: all" and "become: true"
+      - use fully qualified module names from ansible.builtin only
+      - every task has a "name"
+
+      Example of the required output format:
+      - name: Ensure chronyd is running
+        hosts: all
+        become: true
+        tasks:
+          - name: Start and enable chronyd
+            ansible.builtin.service:
+              name: chronyd
+              state: started
+              enabled: true
+    _user_codegen: >-
+      {{ lightspeed_prompt | default('') }}
+      Respond with YAML only, beginning with "- name:".
     _fallback_playbook: |
       - name: Fix httpd
         hosts: all
@@ -83,23 +116,21 @@
           Content-Type: "application/json"
           Authorization: "Bearer {{ ai_model_api_key | default('not-required') }}"
         body_format: json
-        body:
-          model: "{{ _model }}"
-          messages:
-            - role: system
-              content: >-
-                You generate Ansible Playbooks. Output ONLY valid YAML: a
-                top-level list of one play. No prose, no explanation, no
-                markdown code fences. Use fully qualified collection names from
-                ansible.builtin only. Always set "hosts: all" and
-                "become: true".
-            - role: user
-              content: >-
-                Write an Ansible Playbook for this task: {{ lightspeed_prompt }}
-
-                Respond with YAML only, starting with a hyphen.
-          max_tokens: "{{ codegen_max_tokens | default(700) | int }}"
-          temperature: 0
+        # One Jinja expression so max_tokens stays an integer - see the note in
+        # ai_analyze_incident.yml. A quoted "{{ n | int }}" scalar becomes the
+        # JSON string "700", which Ollama rejects.
+        body: >-
+          {{
+            {
+              'model': _model,
+              'messages': [
+                {'role': 'system', 'content': _system_codegen},
+                {'role': 'user', 'content': _user_codegen},
+              ],
+              'max_tokens': codegen_max_tokens | default(700) | int,
+              'temperature': 0.0 | float,
+            }
+          }}
         status_code: 200
         timeout: "{{ ai_request_timeout | default(600) | int }}"
       register: local_response
@@ -117,17 +148,36 @@
             else local_response.json.choices[0].message.content
           }}
 
-    - name: Strip markdown fences and leading prose the model may have added
+    - name: Show exactly what the model returned
+      # Printed before any cleaning, because when generation fails this is the
+      # only thing that tells you why.
+      ansible.builtin.debug:
+        msg: "{{ _raw_playbook.split('\n') }}"
+
+    # --- isolate the YAML ---------------------------------------------------
+    # Small models rarely return bare YAML. In rough order of frequency they
+    # return: a fenced block; YAML preceded by a sentence of explanation; or
+    # YAML followed by an explanation. Handle all three rather than only fences.
+    - name: Take the fenced block if the model used one
+      ansible.builtin.set_fact:
+        _stage1: >-
+          {{ (_raw_playbook.split('```')[1] | regex_replace('^\s*ya?ml\s*', ''))
+             if '```' in _raw_playbook
+             else _raw_playbook }}
+
+    - name: Drop any prose before the YAML starts
+      # Finds the first line that begins a document ('---') or a list item
+      # ('- '), and discards everything before it. Uses string find/slice rather
+      # than a multiline regex, whose flag support varies by ansible-core.
       ansible.builtin.set_fact:
         _clean_playbook: >-
-          {{ _raw_playbook
-             | regex_replace('(?s)^.*?```(?:ya?ml)?\\s*', '')
-             | regex_replace('(?s)```.*$', '')
-             | trim
-             if '```' in _raw_playbook
-             else _raw_playbook | trim }}
+          {{ _stage1[(_stage1.find('\n---') + 1):] | trim
+             if ('\n---' in _stage1 and not _stage1.lstrip().startswith(('-', '---')))
+             else (_stage1[(_stage1.find('\n- ') + 1):] | trim
+                   if ('\n- ' in _stage1 and not _stage1.lstrip().startswith(('-', '---')))
+                   else _stage1 | trim) }}
 
-    - name: Show the candidate playbook
+    - name: Show the candidate playbook after cleaning
       ansible.builtin.debug:
         msg: "{{ _clean_playbook.split('\n') }}"
 
@@ -137,32 +187,108 @@
       register: parse_attempt
       failed_when: false
 
+    # --- normalise the shape ------------------------------------------------
+    - name: Normalise a single play into a list of plays
+      ansible.builtin.set_fact:
+        _plays: "{{ [_parsed] if (_parsed is mapping) else _parsed }}"
+      when:
+        - parse_attempt is not failed
+        - _parsed is defined
+        - _parsed is not string
+        - _parsed is iterable
+
+    - name: Wrap a bare task list into a play
+      # Models frequently return just the tasks, with no play wrapper. That is
+      # recoverable: give it hosts/become and it is a valid playbook.
+      ansible.builtin.set_fact:
+        _plays:
+          - name: "AI-generated remediation"
+            hosts: all
+            become: true
+            tasks: "{{ _plays }}"
+      when:
+        # 'is not none' matters as well as 'is defined': the previous task is
+        # skipped when the output was unparseable, and a null here would blow up
+        # the length test rather than falling through to the diagnostics.
+        - _plays is defined
+        - _plays is not none
+        - _plays | length > 0
+        - _plays[0] is mapping
+        - _plays[0].tasks is not defined
+        - _plays[0].hosts is not defined
+
     - name: Decide whether the generated playbook is usable
       ansible.builtin.set_fact:
         _usable: >-
           {{ (parse_attempt is not failed)
-             and (_parsed is defined)
-             and (_parsed is iterable)
-             and (_parsed is not string)
-             and (_parsed | length > 0)
-             and (_parsed[0].tasks is defined) }}
+             and (_plays is defined) and (_plays is not none)
+             and (_plays is iterable) and (_plays is not string)
+             and (_plays | length > 0)
+             and (_plays[0] is mapping)
+             and (_plays[0].tasks is defined)
+             and (_plays[0].tasks | length > 0) }}
 
-    - name: Fail if the model produced unusable YAML
+    - name: Explain precisely what was wrong with the output
+      # Naming the specific failed check is the difference between "refine the
+      # prompt" guesswork and knowing whether to change model, prompt or parser.
+      ansible.builtin.debug:
+        msg: >-
+          Generation validation FAILED.
+          {% if parse_attempt is failed %}
+          The output is not parseable YAML at all - the model returned prose, or
+          YAML with broken indentation.
+          {% elif _parsed is not defined or _parsed is string %}
+          The output parsed as a plain string, not a structure - almost always
+          prose that happens to be valid YAML.
+          {% elif _plays is not defined or (_plays | length) == 0 %}
+          The output parsed to an empty structure.
+          {% elif _plays[0] is not mapping %}
+          The first element is a {{ _plays[0] | type_debug }}, not a play or task.
+          {% elif _plays[0].tasks is not defined %}
+          A play was found but it has no 'tasks' key. Keys present:
+          {{ _plays[0].keys() | list }}
+          {% else %}
+          The play has an empty task list.
+          {% endif %}
+          Model used: {{ _model }}.
+          {% set is_code_model = ('coder' in _model | lower) or ('code' in _model | lower) %}
+          {% if not is_code_model %}
+          NOTE: {{ _model }} is a general-purpose CHAT model. Those write a good
+          root cause analysis but are unreliable at emitting structured YAML. Use
+          a code-specialised model for this step: set ai_codegen_model_id (the
+          environment defaults to 'qwen2.5-coder:3b') and pull it on the control
+          node with 'sudo podman exec ollama ollama pull <model>'.
+          {% else %}
+          NOTE: {{ _model }} is already a code model, so the prompt or its size is
+          the limit rather than the model type. Try a larger one
+          ('qwen2.5-coder:7b', 'granite-code:8b'), or raise codegen_max_tokens if
+          the output looks truncated.
+          {% endif %}
+          For a guaranteed-green live demo, set allow_fallback_playbook=true on
+          this job template to substitute a known-good playbook instead.
+      when: not _usable | bool
+
+    - name: Fail if the model produced an unusable playbook
       ansible.builtin.fail:
         msg: >-
-          The model returned content that is not a valid Ansible Playbook.
-          Refine the prompt and relaunch, or set allow_fallback_playbook=true
-          to substitute a known-good playbook. Raw output was logged above.
+          The model did not return a usable Ansible Playbook. See the validation
+          detail and the raw output above.
       when:
         - not _usable | bool
         - not _allow_fallback | bool
 
     - name: Substitute the known-good playbook (fallback explicitly enabled)
       ansible.builtin.set_fact:
-        _clean_playbook: "{{ _fallback_playbook }}"
+        _plays: "{{ _fallback_playbook | from_yaml }}"
       when:
         - not _usable | bool
         - _allow_fallback | bool
+
+    - name: Re-serialise the validated plays as clean YAML
+      # Downstream (commit_to_gitea) receives canonical YAML rather than whatever
+      # shape the model happened to emit.
+      ansible.builtin.set_fact:
+        _clean_playbook: "{{ _plays | to_nice_yaml(indent=2, sort_keys=False) }}"
 
     - name: Publish the generated playbook for the commit step
       ansible.builtin.set_stats:

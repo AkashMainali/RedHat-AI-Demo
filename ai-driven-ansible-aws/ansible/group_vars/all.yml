@@ -76,7 +76,18 @@ ai_backend: >-
 # --- Ollama (used when ai_backend is 'ollama') -------------------------------
 ollama_image: "docker.io/ollama/ollama:latest"
 ollama_port: 11434
+# Chat model, used for the root cause analysis. A small model is fine here:
+# summarising logs in prose is forgiving.
 ollama_model: "granite3.1-dense:2b"
+# Code model, used ONLY for generating the remediation playbook. Kept separate
+# because a small general chat model writes an acceptable RCA but will not
+# reliably emit valid YAML - which surfaces as "the model did not return a usable
+# Ansible Playbook". A 3B code-specialised model is both faster on CPU and far
+# more reliable at structured output.
+# Alternatives: 'granite-code:8b' (on-brand, slower on CPU),
+#               'qwen2.5-coder:7b' (stronger, slower still).
+# Set to "" to reuse ollama_model for both.
+ollama_codegen_model: "qwen2.5-coder:3b"
 
 # --- AI endpoint consumed by the demo playbooks ------------------------------
 # Every demo playbook speaks plain OpenAI /v1 chat completions, so pointing the
@@ -89,6 +100,12 @@ ai_model_url: >-
      | default('http://' ~ control_private_ip ~ ':' ~ ollama_port ~ '/v1', true) }}
 ai_model_id: >-
   {{ lookup('ansible.builtin.env', 'AI_MODEL_ID') | default(ollama_model, true) }}
+# Model for the playbook-generation step only. Defaults to the code model when
+# running on the local Ollama endpoint; on an external endpoint it falls back to
+# ai_model_id unless AI_CODEGEN_MODEL_ID is set.
+ai_codegen_model_id: >-
+  {{ lookup('ansible.builtin.env', 'AI_CODEGEN_MODEL_ID')
+     | default(ollama_codegen_model if ai_backend == 'ollama' else '', true) }}
 ai_model_api_key: >-
   {{ lookup('ansible.builtin.env', 'AI_MODEL_API_KEY') | default('not-required', true) }}
 

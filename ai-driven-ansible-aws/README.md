@@ -260,18 +260,38 @@ The demo content is built for you. `demo_content_enabled` defaults to `true`, so
 after `bootstrap.sh` finishes you have 10 job templates, both workflows, the
 inventory, all credentials, two Gitea repos, and a live EDA rulebook activation.
 
-| Step | Action | What to watch |
-|---|---|---|
-| 1 | Launch **❌ Break Apache** | Inserts `InvalidDirectiveHere` into `httpd.conf`; the restart fails by design |
-| 2 | Automation Decisions → Rulebook Activations | Filebeat → Kafka → EDA matches the event |
-| 3 | *(automatic)* **AI Insights and Lightspeed prompt generation** | Logs collected, AI writes an RCA, Mattermost gets both, a survey is prepared |
-| 4 | Read Mattermost **#town-square** | The incident logs and the AI root cause analysis — the "enriched ticket" moment |
-| 5 | Launch **Remediation Workflow** | Review the AI-authored prompt in the survey, then finish. This is the human-in-the-loop checkpoint |
-| 6 | Check Gitea `lightspeed-playbooks` | The AI-generated playbook, committed as the audit trail |
-| 7 | Launch **🔧✅ Execute HTTPD Remediation** with limit `target-node` | The fix is applied |
-| 8 | Visit `http://<target-ip>` | Serving again |
+You launch **three** things by hand. Everything else is a workflow node.
 
-Reset between runs with **✅ Restore Apache**.
+| Step | Launch | Type | What to watch |
+|---|---|---|---|
+| 1 | **❌ Break Apache** | Job template | Inserts `InvalidDirectiveHere` into `httpd.conf`; the restart fails by design |
+| 2 | *(nothing)* | — | Automation Decisions → Rulebook Activations shows Filebeat → Kafka → EDA matching the event |
+| 3 | *(nothing — automatic)* | Workflow | **AI Insights and Lightspeed prompt generation** runs itself: logs collected, AI writes an RCA, Mattermost gets both, the survey is prepared |
+| 4 | *(nothing)* | — | Read Mattermost **#town-square** — incident logs and the AI root cause analysis. The "enriched ticket" moment |
+| 5 | **Remediation Workflow** | **Workflow job template** | Survey shows a known-good prompt plus the one **the AI wrote**. Copy the AI's over if you're happy with it, then Next → Finish. This review is the human-in-the-loop checkpoint |
+| 6 | *(nothing)* | — | Gitea `lightspeed-playbooks` now holds the AI-generated playbook — the audit trail |
+| 7 | **🔧✅ Execute HTTPD Remediation** with Limit `target-node` | Job template | The fix is applied |
+| 8 | *(nothing)* | — | `http://<target-ip>` is serving again |
+
+Reset between runs with **✅ Restore Apache** (job template).
+
+**Do not launch these seven directly — they are workflow nodes:**
+
+- `⚙️ Apache Service Status Check`
+- `🤖 RHEL AI: Analyze Incident`
+- `📣 Notify via Mattermost`
+- `⚙️ Build Ansible Lightspeed Job Template`
+- `🧠 Lightspeed Remediation Playbook Generator`
+- `🧾 Commit Fix to Gitea`
+- `⚙️ Build HTTPD Remediation Template`
+
+They read artifacts from the nodes before them, so on their own they fail with a
+clear message — e.g. *"No prompt supplied. Launch the Remediation Workflow and
+complete the survey, which provides lightspeed_prompt."*
+
+In step 5, pick the row whose **Type** column reads *Workflow job template*.
+`Remediation Workflow` sorts just after `📣 Notify via Mattermost` in the
+alphabetical Templates list, so it may be below the fold.
 
 The two-workflow split is the point, not an accident: the first runs unattended
 and stops at a reviewable prompt, the second is launched by a human who has seen
@@ -353,9 +373,33 @@ A playbook in the response means you are entitled — set `lightspeed_mode: saas
 `ansible/roles/demo_content/defaults/main.yml` and supply the token. A 401/403
 means no seat, and the default `local` mode is the right call.
 
-Quantized models occasionally emit YAML that will not parse. The generator fails
-loudly by default so you can see it. For a high-stakes live demo, set
-`allow_fallback_playbook: true` to substitute a known-good playbook instead.
+### Two models, not one
+
+Log analysis and code generation are different jobs, so the demo uses a different
+model for each:
+
+| Step | Variable | Default | Why |
+|---|---|---|---|
+| Root cause analysis | `ollama_model` | `granite3.1-dense:2b` | Prose summarisation is forgiving; small is fine and fast |
+| Playbook generation | `ollama_codegen_model` | `qwen2.5-coder:3b` | Must emit valid YAML. A small **chat** model will not do this reliably |
+
+Both are pulled automatically. If you point the demo at an external endpoint, set
+`AI_CODEGEN_MODEL_ID` too, or it reuses `AI_MODEL_ID`.
+
+This split exists because a 2B general chat model reliably writes a decent RCA but
+routinely wraps generated YAML in prose — which surfaces mid-demo as *"the model
+did not return a usable Ansible Playbook"*. The generator is deliberately tolerant
+(it strips fences, drops prose preambles, and wraps a bare task list or a single
+play into a valid playbook), but tolerance cannot fix output that was never YAML.
+
+On a real serving stack — OpenShift AI or RHEL AI running Granite 8B on a GPU —
+one model handles both comfortably. The two-model split is a concession to CPU
+inference, not the recommended production shape.
+
+For a high-stakes live demo, set `allow_fallback_playbook: true` on the
+`🧠 Lightspeed Remediation Playbook Generator` job template. When generation
+produces unusable YAML it substitutes a known-good playbook instead of failing.
+Off by default so problems stay visible while you build.
 
 ### Demo content is versioned here
 
@@ -456,6 +500,13 @@ generated inventory. Add `--delete-ssh-key` to also remove the local keypair.
   endpoint serves. Check with
   `curl -sSk <endpoint>/v1/models -H "Authorization: Bearer $TOKEN"`, or just run
   `scripts/set-ai-endpoint.sh`, which lists the valid ids for you.
+- **`cannot unmarshal string into Go struct field ... max_tokens of type int`** —
+  a numeric request field was sent as a JSON string. Ollama is written in Go and
+  unmarshals strictly; OpenAI and vLLM coerce silently, so this only shows up
+  against Ollama. The demo playbooks build their request bodies as a single Jinja
+  expression specifically to preserve numeric types — if you add a field, do the
+  same rather than writing `max_tokens: "{{ n | int }}"`, which templates to the
+  string `"120"`.
 - **AI step is slow or times out** — local CPU inference takes 30–90s per call and
   the playbook allows 600s. `podman logs ollama` on the control node shows whether
   the model loaded; the first run pulls several GB. Point at a real endpoint if you

@@ -24,6 +24,12 @@
     _endpoint: "{{ ai_model_url | default('') | regex_replace('/$', '') }}"
     _model: "{{ ai_model_id | default('granite3.1-dense:2b') }}"
     _timeout: "{{ ai_request_timeout | default(600) | int }}"
+    _system_fix: >-
+      You are a Red Hat Enterprise Linux subject matter expert. Answer concisely
+      and only with what was asked.
+    _system_rca: >-
+      You are a Red Hat Enterprise Linux subject matter expert writing a root
+      cause analysis for an incident ticket.
 
   tasks:
     - name: Validate that an AI endpoint was supplied
@@ -43,17 +49,25 @@
           Content-Type: "application/json"
           Authorization: "Bearer {{ ai_model_api_key | default('not-required') }}"
         body_format: json
-        body:
-          model: "{{ _model }}"
-          messages:
-            - role: system
-              content: >-
-                You are a Red Hat Enterprise Linux subject matter expert. Answer
-                concisely and only with what was asked.
-            - role: user
-              content: "{{ fix_prompt }}"
-          max_tokens: "{{ ai_fix_max_tokens | default(120) | int }}"
-          temperature: 0
+        # Built as ONE Jinja expression returning a dict, so numeric fields stay
+        # numeric. Writing "max_tokens: {{ n | int }}" as a quoted scalar sends
+        # the JSON string "120" instead of 120: Ansible's default (non-native)
+        # Jinja returns strings. OpenAI and vLLM coerce that silently, but Ollama
+        # is Go and rejects it with
+        #   "cannot unmarshal string into Go struct field
+        #    ChatCompletionRequest.max_tokens of type int"
+        body: >-
+          {{
+            {
+              'model': _model,
+              'messages': [
+                {'role': 'system', 'content': _system_fix},
+                {'role': 'user', 'content': fix_prompt},
+              ],
+              'max_tokens': ai_fix_max_tokens | default(120) | int,
+              'temperature': 0.0 | float,
+            }
+          }}
         status_code: 200
         timeout: "{{ _timeout | int }}"
         return_content: true
@@ -70,17 +84,18 @@
           Content-Type: "application/json"
           Authorization: "Bearer {{ ai_model_api_key | default('not-required') }}"
         body_format: json
-        body:
-          model: "{{ _model }}"
-          messages:
-            - role: system
-              content: >-
-                You are a Red Hat Enterprise Linux subject matter expert writing
-                a root cause analysis for an incident ticket.
-            - role: user
-              content: "{{ rca_prompt }}"
-          max_tokens: "{{ ai_rca_max_tokens | default(600) | int }}"
-          temperature: 0.3
+        body: >-
+          {{
+            {
+              'model': _model,
+              'messages': [
+                {'role': 'system', 'content': _system_rca},
+                {'role': 'user', 'content': rca_prompt},
+              ],
+              'max_tokens': ai_rca_max_tokens | default(600) | int,
+              'temperature': 0.3 | float,
+            }
+          }}
         status_code: 200
         timeout: "{{ _timeout | int }}"
         return_content: true

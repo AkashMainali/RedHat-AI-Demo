@@ -163,7 +163,15 @@
           Attach a subscription at https://{{ control_public_ip }}
           (choose Username/password, enter your Red Hat login) and re-run
           scripts/demo_content.sh.
-          {% elif '401' in m or 'credential' in m | lower %}
+          {% elif '403' in m and 'credential_types' in m %}
+          AAP refused to modify a credential TYPE. This is not an auth problem:
+          AAP will not change the inputs/injectors of a credential type that has
+          credentials attached. This role migrates that automatically by deleting
+          and recreating the affected credentials, so seeing it means the
+          migration step did not run - re-run ./scripts/demo_content.sh. If it
+          persists, delete the "Demo AI Endpoint" credential in
+          Automation Execution > Credentials and re-run.
+          {% elif '401' in m %}
           Authentication to the AAP API failed. Check that AAP_ADMIN_PASSWORD
           matches the admin password AAP was installed with.
           {% elif 'ansible.controller' in m %}

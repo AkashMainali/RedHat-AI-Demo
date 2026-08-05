@@ -43,18 +43,25 @@
   delay: 5
   until: ollama_up is succeeded
 
-- name: Check whether the demo model is already pulled
+- name: Check which models are already pulled
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ ollama_port }}/api/tags"
     method: GET
     status_code: 200
   register: ollama_tags
 
-- name: Pull the demo model (several GB - first run takes a few minutes)
+- name: Pull the demo models (several GB - first run takes a few minutes)
+  # Two models by design: a small chat model for the root cause analysis, and a
+  # code-specialised one for generating the remediation playbook. A general 2B
+  # chat model cannot reliably emit valid YAML, which shows up mid-demo as
+  # "the model did not return a usable Ansible Playbook".
   ansible.builtin.command:
-    cmd: "podman exec ollama ollama pull {{ ollama_model }}"
+    cmd: "podman exec ollama ollama pull {{ item }}"
+  loop: "{{ [ollama_model, ollama_codegen_model] | select | unique | list }}"
+  loop_control:
+    label: "{{ item }}"
   when: >-
-    ollama_model not in (
+    item not in (
       ollama_tags.json.models | default([]) | map(attribute='name') | list
     )
   changed_when: true

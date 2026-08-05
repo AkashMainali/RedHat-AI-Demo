@@ -86,6 +86,12 @@
       no_log: true
 
     - name: Update the AAP credential to point at the new endpoint
+      # ai_codegen_model_id must be sent too. The module replaces the whole
+      # inputs dict, so omitting it would clear the field the credential type
+      # injects, and the generator job template would lose its model id.
+      # Defaults to the same model: a capable endpoint (OpenShift AI serving
+      # Granite 8B, say) handles both RCA and code generation, and the two-model
+      # split only exists to work around small CPU-hosted models.
       ansible.controller.credential:
         name: "{{ ai_credential_name }}"
         organization: "{{ demo_organization }}"
@@ -93,6 +99,9 @@
         inputs:
           ai_model_url: "{{ ai_model_url }}"
           ai_model_id: "{{ ai_model_id }}"
+          ai_codegen_model_id: >-
+            {{ lookup('ansible.builtin.env', 'AI_CODEGEN_MODEL_ID')
+               | default(ai_model_id, true) }}
           ai_model_api_key: "{{ ai_model_api_key }}"
         state: present
       environment:

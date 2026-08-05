@@ -19,17 +19,42 @@ Created in AAP
   Activation     {{ eda_activation_name }} -> {{ kafka_topic }}@{{ control_private_ip }}:{{ kafka_port }}
 
 Run the demo
-  1. Launch "{{ jt_break_apache }}" in Automation Execution > Templates.
+  You launch exactly THREE things by hand. Everything else is a workflow node -
+  the individual job templates will fail if launched on their own, because they
+  read artifacts from the nodes before them.
+
+  1. JOB TEMPLATE  "{{ jt_break_apache }}"
+     Automation Execution > Templates. Breaks Apache on the target.
+
   2. Watch Automation Decisions > Rulebook Activations pick up the Kafka event.
-  3. "{{ enrichment_workflow_name }}" runs automatically.
+     "{{ enrichment_workflow_name }}"
+     then runs AUTOMATICALLY - you do not launch it.
      Check Mattermost #{{ mattermost_channel }} for the logs and the AI RCA.
-  4. Launch "{{ remediation_workflow_name }}", review the AI prompt in the
-     survey, and finish. The generated playbook is committed to
+
+  3. WORKFLOW       "{{ remediation_workflow_name }}"
+     Same Templates list; its Type column says "Workflow job template".
+     Launch it, and the survey shows two boxes: a known-good prompt on the
+     required field, and the prompt Red Hat AI wrote in the reference field.
+     Copy the AI one over if you are happy with it - that review IS the demo -
+     then Next > Finish.
+     The generated playbook is committed to
      {{ gitea_url_external }}/{{ gitea_admin_user }}/{{ demo_playbook_repo }}
-  5. Launch "{{ jt_execute_remediation }}" with limit {{ demo_target_hostname }}.
-  6. Confirm http://{{ target_public_ip }} is serving again.
+
+  4. JOB TEMPLATE  "{{ jt_execute_remediation }}"
+     Launch with Limit = {{ demo_target_hostname }}. Applies the AI's fix.
+
+  5. Confirm http://{{ target_public_ip }} is serving again.
 
 Reset between runs
-  Launch "{{ jt_restore_apache }}".
+  Launch job template "{{ jt_restore_apache }}".
+
+Do NOT launch these directly - they are workflow nodes and need their inputs:
+  {{ jt_status_check }}
+  {{ jt_ai_analyze }}
+  {{ jt_notify_mattermost }}
+  {{ jt_build_lightspeed }}
+  {{ jt_lightspeed_generate }}
+  {{ jt_commit_to_gitea }}
+  {{ jt_build_remediation }}
 
 ==============================================================================
