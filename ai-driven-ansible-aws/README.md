@@ -13,9 +13,9 @@ lab as reusable Infrastructure as Code so you can run it in your own account.
 Two RHEL 10 nodes in a dedicated VPC (public subnet, internet gateway):
 
 - **control** (`m6i.2xlarge`) — Ansible Automation Platform 2.6 (containerized,
-  all-in-one incl. EDA), plus Kafka (KRaft), Gitea and Mattermost as Podman
-  Quadlet services. Also runs a local CPU inference endpoint unless you supply an
-  external one.
+  all-in-one incl. EDA), plus Kafka (KRaft), Gitea, Mattermost and **Ollama** as
+  Podman Quadlet services. Ollama serves two small models over an
+  OpenAI-compatible API and is skipped entirely if you supply your own endpoint.
 - **target** (`t3.medium`) — the RHEL webserver running `httpd` with Filebeat
   shipping Apache logs to Kafka on the control node. This is the service that
   "fails" and is auto-remediated.
@@ -30,7 +30,8 @@ Two RHEL 10 nodes in a dedicated VPC (public subnet, internet gateway):
       │  Kafka / Gitea / MM    │───── SSH 22 ───▶│  (managed by AAP)   │
       └────────────────────────┘   run job templ └─────────────────────┘
                  │
-                 └──▶ AI inference: local CPU endpoint, or your own
+                 └──▶ AI inference (port 11434, private only):
+                      Ollama + 2 models by default, or your own
                       OpenShift AI / RHEL AI / MaaS endpoint
 ```
 
@@ -165,13 +166,15 @@ What you are prompted for:
 | Red Hat username | **Yes** | Used for both RHSM and `registry.redhat.io` |
 | Red Hat password | **Yes** | Hidden input |
 | Vault password | No | Enter to auto-generate |
-| Red Hat AI model endpoint URL | No | Enter to use the local CPU endpoint |
+| Red Hat AI model endpoint URL | No | Enter to use the built-in local endpoint |
 | Red Hat AI model id | No | Only asked if you gave an endpoint |
 | Red Hat AI model API key | No | Only asked if you gave an endpoint |
+| Model id for code generation | No | Only asked if you gave an endpoint; Enter reuses the model above |
 | Ansible Lightspeed API key | No | Enter to generate playbooks with the model endpoint |
 
 Only the two Red Hat credentials are required — press Enter through the rest and
-you get a complete, working demo with local CPU inference.
+you get a complete, working demo running entirely on models the IaC deploys for
+you. See [AI models used when you supply nothing](#ai-models-used-when-you-supply-nothing).
 
 Anything already exported is used and **not** prompted for, so repeat and
 non-interactive runs never block:
@@ -194,25 +197,33 @@ never the Red Hat credentials or the vault password.
 
 `site.yml` is tagged, so any stage can be run alone:
 
-| Tag | Stage |
-|---|---|
-| `base` | RHSM registration and base packages |
-| `target` | httpd + Filebeat on the target node |
-| `services` | Kafka, Gitea, Mattermost containers |
-| `ai` | local CPU inference endpoint |
-| `aap` | the AAP containerized install (the slow one) |
-| `subscription` | attach the AAP subscription only (seconds) |
-| `demo_content` | Gitea content + AAP/EDA configuration |
+| Tag | Stage | Roughly |
+|---|---|---|
+| `base` | RHSM registration and base packages | 2 min |
+| `target` | httpd + Filebeat on the target node | 2 min |
+| `services` | Kafka, Gitea, Mattermost containers | 5 min |
+| `ai` | local inference endpoint + model pulls | 5 min (first run) |
+| `aap` | the AAP containerized install | **20–40 min** |
+| `subscription` | attach the AAP subscription only | seconds |
+| `demo_content` | Gitea content + AAP/EDA configuration | 2–5 min |
 
 ```bash
 ./scripts/bootstrap.sh --profile my-sso-profile --tags services
-./scripts/demo_content.sh --profile my-sso-profile --check     # dry run
+./scripts/bootstrap.sh --profile my-sso-profile --tags subscription   # attach only
+./scripts/demo_content.sh --profile my-sso-profile --check            # dry run
 ./scripts/demo_content.sh --profile my-sso-profile -- --start-at-task "Create the workflows"
 ```
 
-`demo_content` is deliberately a single tag rather than one per stage: the stages
-share facts (the Gitea API token minted first is consumed by the AAP credential
-and EDA stages), so running them in isolation would fail on undefined variables.
+Two deliberate behaviours:
+
+- **`demo_content` implies `ai`.** Selecting `demo_content` automatically adds
+  `ai`, in both `bootstrap.sh --tags` and `demo_content.sh`. The demo content
+  writes model ids into AAP's AI credential, so the endpoint serving those models
+  has to be reconciled in the same run — otherwise the credential advertises a
+  model nothing pulled, and the demo fails later with `model 'x' not found`.
+- **`demo_content` is one tag, not one per stage.** Its stages share facts (the
+  Gitea API token minted first is consumed by the AAP credential and EDA stages),
+  so running them in isolation would fail on undefined variables.
 
 ## Accessing the environment
 
@@ -301,18 +312,56 @@ belongs in production.
 ### AI inference
 
 Every demo playbook talks plain OpenAI `/v1/chat/completions`, so the inference
-backend is a variable, not a code change. Two options:
+backend is configuration, not code. You do **not** need an endpoint to start.
 
-**Local CPU (default).** Ollama on the control node serving
-`granite3.1-dense:2b`. No extra infrastructure, no cost, inference stays in your
-VPC — but expect 30–90 seconds per call, so narrate while it thinks. Good for
-building and rehearsing the demo.
+### AI models used when you supply nothing
 
-**Your own model endpoint.** Anything OpenAI-compatible: OpenShift AI Model
-Serving, RHEL AI, Red Hat AI Inference Server, or Red Hat MaaS.
+Give no endpoint details and the IaC deploys a complete, self-contained inference
+stack on the control node — **Ollama** as a Podman Quadlet service on port
+`11434`, serving two models it pulls for you:
 
-You do **not** need this up front. Build the environment now with the local
-endpoint, and switch whenever your endpoint is ready — see below.
+| Role in the demo | Model | Size | Variable | Used by |
+|---|---|---|---|---|
+| Root cause analysis | `granite3.1-dense:2b` | ~1.6 GB | `ollama_model` | `🤖 RHEL AI: Analyze Incident` |
+| Playbook generation | `qwen2.5-coder:3b` | ~1.9 GB | `ollama_codegen_model` | `🧠 Lightspeed Remediation Playbook Generator` |
+
+**Why two models rather than one.** Summarising logs into prose and emitting valid
+YAML are different jobs. A 2B general **chat** model writes a perfectly good RCA
+but routinely wraps generated YAML in prose, which surfaces mid-demo as *"the model
+did not return a usable Ansible Playbook"*. A small **code** model is both faster
+on CPU and far more reliable at structured output. The generator is deliberately
+tolerant — it strips markdown fences, drops prose preambles, and wraps a bare task
+list or a lone play into a valid playbook — but no parser can fix output that was
+never YAML.
+
+**What to expect.** CPU inference, so 30–90 seconds per call. Narrate while it
+thinks. Both models are kept resident (`OLLAMA_MAX_LOADED_MODELS=2`) and warmed at
+deploy time, so neither step pays a cold start or an eviction reload mid-demo.
+Nothing leaves your VPC: the endpoint is reachable only over the control node's
+private address, and is never published to the internet.
+
+**Cost:** nothing beyond the control node you are already running. No GPU, no
+external API, no tokens.
+
+**Overriding just the models**, keeping everything local — in
+`ansible/group_vars/all.yml`:
+
+```yaml
+ollama_model: "granite3.1-dense:8b"      # better RCA, slower on CPU
+ollama_codegen_model: "granite-code:8b"  # on-brand code model, slower
+```
+
+Then `./scripts/demo_content.sh --profile <p>` pulls and switches to them.
+
+### Using your own endpoint instead
+
+Anything OpenAI-compatible: **OpenShift AI Model Serving**, RHEL AI, Red Hat AI
+Inference Server, or Red Hat MaaS. Setting an endpoint skips the local Ollama role
+entirely — no models are pulled and nothing runs on the control node.
+
+On a real serving stack one capable model handles both jobs, so the two-model split
+disappears: leave the code-generation model blank and it reuses your main model.
+The split is a concession to CPU inference, not the recommended production shape.
 
 #### Switching to your own endpoint later
 
@@ -335,11 +384,20 @@ Non-interactive equivalent:
 AI_MODEL_ENDPOINT="https://<model>-<ns>.apps.<cluster>/v1" \
 AI_MODEL_ID="granite-3.1-8b-instruct" \
 AI_MODEL_API_KEY="<token>" \
-  ./scripts/set-ai-endpoint.sh
+AI_CODEGEN_MODEL_ID="" \
+  ./scripts/set-ai-endpoint.sh          # blank codegen = reuse AI_MODEL_ID
 ```
 
-Or set the same three variables before a fresh `bootstrap.sh` run, which skips
-the local Ollama role entirely.
+Or set the same variables before a fresh `bootstrap.sh` run, which skips the local
+Ollama role entirely.
+
+| Variable | Purpose |
+|---|---|
+| `AI_MODEL_ENDPOINT` | OpenAI-compatible base URL, must end in `/v1` |
+| `AI_MODEL_ID` | Model id exactly as `/v1/models` reports it |
+| `AI_MODEL_API_KEY` | Bearer token |
+| `AI_CODEGEN_MODEL_ID` | Optional second model for playbook generation; blank reuses `AI_MODEL_ID` |
+| `AI_BACKEND` | `ollama` (default) or `external`; set automatically when an endpoint is given |
 
 **For OpenShift AI Model Serving:** use the deployed model's *inference endpoint*
 with `/v1` appended, and a token from the ServiceAccount you granted access. The
@@ -373,33 +431,13 @@ A playbook in the response means you are entitled — set `lightspeed_mode: saas
 `ansible/roles/demo_content/defaults/main.yml` and supply the token. A 401/403
 means no seat, and the default `local` mode is the right call.
 
-### Two models, not one
+### Guaranteed-green live demos
 
-Log analysis and code generation are different jobs, so the demo uses a different
-model for each:
-
-| Step | Variable | Default | Why |
-|---|---|---|---|
-| Root cause analysis | `ollama_model` | `granite3.1-dense:2b` | Prose summarisation is forgiving; small is fine and fast |
-| Playbook generation | `ollama_codegen_model` | `qwen2.5-coder:3b` | Must emit valid YAML. A small **chat** model will not do this reliably |
-
-Both are pulled automatically. If you point the demo at an external endpoint, set
-`AI_CODEGEN_MODEL_ID` too, or it reuses `AI_MODEL_ID`.
-
-This split exists because a 2B general chat model reliably writes a decent RCA but
-routinely wraps generated YAML in prose — which surfaces mid-demo as *"the model
-did not return a usable Ansible Playbook"*. The generator is deliberately tolerant
-(it strips fences, drops prose preambles, and wraps a bare task list or a single
-play into a valid playbook), but tolerance cannot fix output that was never YAML.
-
-On a real serving stack — OpenShift AI or RHEL AI running Granite 8B on a GPU —
-one model handles both comfortably. The two-model split is a concession to CPU
-inference, not the recommended production shape.
-
-For a high-stakes live demo, set `allow_fallback_playbook: true` on the
-`🧠 Lightspeed Remediation Playbook Generator` job template. When generation
-produces unusable YAML it substitutes a known-good playbook instead of failing.
-Off by default so problems stay visible while you build.
+Generation is non-deterministic, which is a risk in front of an audience. Set
+`allow_fallback_playbook: true` on the
+`🧠 Lightspeed Remediation Playbook Generator` job template and unusable output is
+replaced with a known-good playbook instead of failing the run. Off by default so
+problems stay visible while you build.
 
 ### Demo content is versioned here
 
@@ -427,8 +465,10 @@ Two on-demand instances (an `m6i.2xlarge` + a `t3.medium`), two EIPs, EBS, and a
 KMS key. Roughly **US$0.50–0.60/hour** in `us-east-1` while running — dominated
 by the control node. Destroy it when you are done.
 
-If you point the demo at an external model endpoint, that endpoint's cost is
-separate and not included here.
+**Inference costs nothing extra** with the defaults: both models run on the control
+node's CPU, so there is no GPU instance and no external API billing. The trade-off
+is latency — 30–90 seconds per AI call. If you point the demo at an external
+endpoint, that endpoint's cost is separate and not counted here.
 
 ## Cleanup
 
