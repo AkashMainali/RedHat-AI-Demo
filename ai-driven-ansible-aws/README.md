@@ -309,49 +309,263 @@ and stops at a reviewable prompt, the second is launched by a human who has seen
 what the AI proposed. That boundary is where a change window or approval gate
 belongs in production.
 
-### AI inference
+## Demo run book
 
-Every demo playbook talks plain OpenAI `/v1/chat/completions`, so the inference
-backend is configuration, not code. You do **not** need an endpoint to start.
+A presenter's script: what to check first, what to click, what to say, and how long
+each step takes. Total run time **8–12 minutes**, most of it waiting on CPU
+inference.
 
-### AI models used when you supply nothing
+### Before you present — 5-minute pre-flight
 
-Give no endpoint details and the IaC deploys a complete, self-contained inference
-stack on the control node — **Ollama** as a Podman Quadlet service on port
-`11434`, serving two models it pulls for you:
+Run these once, before the audience is watching. Each is a place the demo can be
+silently broken.
 
-| Role in the demo | Model | Size | Variable | Used by |
+```bash
+# 1. Environment converged and demo content current
+./scripts/demo_content.sh --profile my-sso-profile
+
+# 2. Apache is HEALTHY to start from (the trigger needs a running service)
+#    Launch "✅ Restore Apache" in AAP, or:
+curl -sSf http://<target-ip> >/dev/null && echo "webserver OK"
+
+# 3. Both models are pulled and warm
+ssh -i ~/.ssh/aiops_ansible_demo ec2-user@<control-ip> \
+  'sudo podman exec ollama ollama list'
+```
+
+Then confirm in the AAP UI:
+
+| Check | Where | Must show |
+|---|---|---|
+| Rulebook activation | Automation Decisions → Rulebook Activations | `Web App` = **Running** |
+| Subscription | Settings → Subscription | attached, node capacity free |
+| Templates | Automation Execution → Templates | 10 job templates + 2 workflows |
+
+**If the activation is not `Running`, nothing will trigger.** That is the single
+most common reason a rehearsed demo does nothing.
+
+Finally, tidy the stage:
+
+- Delete any old `Environment ready` posts from Mattermost `#town-square` so the
+  channel is empty when you start.
+- Open five browser tabs in this order — you will move left to right:
+  1. AAP → Automation Execution → **Templates**
+  2. AAP → Automation Decisions → **Rulebook Activations**
+  3. AAP → Automation Execution → **Jobs**
+  4. **Mattermost** `#town-square`
+  5. **Gitea** → `lab-user/lightspeed-playbooks`
+- Have a sixth tab on `http://<target-ip>` showing the working web page.
+
+### The run
+
+**Step 1 — Break it.** *(Tab 1 · ~30s)*
+
+Launch **❌ Break Apache**.
+
+> "This inserts an invalid directive into httpd.conf and restarts Apache. Nothing
+> about the rest of this demo is scripted — from here on, the platform reacts."
+
+Switch to tab 6 and refresh: the site is down.
+
+**Step 2 — Detection.** *(Tab 2 · ~15s)*
+
+Open the `Web App` activation's log.
+
+> "Filebeat shipped the httpd error log to Kafka. Event-Driven Ansible was already
+> watching that topic, matched the shutdown event, and launched a workflow. No
+> polling, no cron, no human."
+
+**Step 3 — Enrichment runs itself.** *(Tab 3 · 2–4 min)*
+
+**Launch nothing.** Watch `AI Insights and Lightspeed prompt generation` appear and
+work through four nodes.
+
+> "Four things happen without us. It checks the service state, sends the logs to a
+> Granite model for analysis, posts the result to chat, and then builds the next
+> piece of automation."
+
+The AI node is the slow one — 30–90 seconds per call, two calls. Fill it by
+explaining that inference is running on the control node's CPU inside the VPC, and
+that in production this would be RHEL AI or OpenShift AI on a GPU.
+
+**Step 4 — The payoff.** *(Tab 4 · ~1 min)*
+
+Mattermost `#town-square` now has two posts: the raw incident logs, and the
+AI-written root cause analysis.
+
+> "This is the moment worth paying attention to. Mattermost is standing in for
+> ServiceNow. A ticket now exists with the logs attached *and* a root cause
+> analysis — before any engineer has opened it. That is the difference between an
+> alert and an actionable ticket."
+
+**Step 5 — Human in the loop.** *(Tab 1 · ~1 min)*
+
+Launch **Remediation Workflow** — the row whose **Type** is *Workflow job template*.
+
+The survey has two boxes: a known-good prompt, and **the prompt the AI wrote from
+your actual failure**. Read the AI's version aloud, then copy it into the required
+field and click **Next → Finish**.
+
+> "Here is the control point. The AI proposed a fix; a human reads it before
+> anything is generated. In your environment this is where a change window or an
+> approval gate goes. This is why it's two workflows and not one."
+
+**Step 6 — Automation writes automation.** *(Tab 3 → Tab 5 · 1–2 min)*
+
+Watch the four remediation nodes run, then switch to Gitea.
+
+> "The model generated a playbook, it was committed to Git, the project synced, and
+> a new job template was created to run it. The fix is a reviewable commit — not
+> something a machine applied behind your back."
+
+Open the commit and show the YAML.
+
+**Step 7 — Apply it.** *(Tab 1 · ~30s)*
+
+Launch **🔧✅ Execute HTTPD Remediation** with **Limit** = `target-node`.
+
+> "Note this is still deliberate and scoped. The limit means it touches one host."
+
+**Step 8 — Close the loop.** *(Tab 6 · ~10s)*
+
+Refresh the web page. It serves again.
+
+> "Detection, enrichment, root cause analysis, generated remediation, an audit
+> trail in Git, and a human decision point — start to finish in about ten minutes."
+
+### Reset between runs
+
+Launch **✅ Restore Apache**. It removes the bad directive, validates the config,
+restarts the service and confirms the site responds. Takes about 20 seconds.
+
+For a fully clean second run, also:
+
+- delete the new posts in Mattermost `#town-square`
+- optionally delete `🔧✅ Execute HTTPD Remediation`, so step 6 visibly creates it
+
+### If it stalls mid-demo
+
+| Symptom | Most likely cause | Quick move |
+|---|---|---|
+| Nothing happens after step 1 | Activation not `Running` | Say you'll trigger manually; launch the enrichment workflow directly |
+| AI node runs > 3 min | Cold model | Wait — it will finish. Talk about CPU vs GPU inference |
+| Step 6 fails on generation | Model emitted unusable YAML | Relaunch the workflow; accept the pre-filled known-good prompt instead of the AI's |
+| Any workflow node fails | — | The job's output names the cause; every failure path in this build prints a specific next step |
+
+Before a high-stakes run, set `allow_fallback_playbook: true` on
+`🧠 Lightspeed Remediation Playbook Generator`. Generation is non-deterministic, and
+that flag substitutes a known-good playbook rather than failing in front of people.
+
+### Timing summary
+
+| Step | Time | You do |
+|---|---|---|
+| 1 Break Apache | 30s | Launch |
+| 2 EDA detection | 15s | Watch |
+| 3 Enrichment workflow | 2–4 min | Watch + narrate |
+| 4 Mattermost RCA | 1 min | Read aloud |
+| 5 Remediation Workflow + survey | 1 min | Review, copy, launch |
+| 6 Generate, commit, sync | 1–2 min | Watch, show Git |
+| 7 Execute remediation | 30s | Launch with limit |
+| 8 Verify | 10s | Refresh |
+| **Total** | **8–12 min** | |
+
+## The role of AI in this demo
+
+AI is **not** what detects the failure and **not** what applies the fix. Detection
+is Filebeat, Kafka and Event-Driven Ansible. Execution is an ordinary Ansible
+playbook run by Automation Controller. Those parts are deterministic, and the demo
+is better for it.
+
+AI does exactly three things, at three points in the chain:
+
+| # | Job template | What the model is asked | What comes back | Where it goes |
 |---|---|---|---|---|
-| Root cause analysis | `granite3.1-dense:2b` | ~1.6 GB | `ollama_model` | `🤖 RHEL AI: Analyze Incident` |
-| Playbook generation | `qwen2.5-coder:3b` | ~1.9 GB | `ollama_codegen_model` | `🧠 Lightspeed Remediation Playbook Generator` |
+| 1 | `🤖 RHEL AI: Analyze Incident` | *"A service is failing on host X. Based on these logs, give one concise fix instruction."* `max_tokens: 120`, `temperature: 0` | `ai_fix_instruction` — one or two sentences | Becomes the pre-filled prompt a human reviews |
+| 2 | `🤖 RHEL AI: Analyze Incident` | *"Analyse these logs and write a root cause analysis."* `max_tokens: 600`, `temperature: 0.3` | `ai_rca_text` — a paragraph of prose | Posted to Mattermost as the enriched ticket |
+| 3 | `🧠 Lightspeed Remediation Playbook Generator` | *"Write an Ansible Playbook for this task: &lt;reviewed prompt&gt;"* `max_tokens: 700`, `temperature: 0` | `generated_playbook` — YAML | Sanitised, committed to Gitea, then run |
+
+Calls 1 and 2 run unattended in the enrichment workflow. Call 3 only happens
+**after a human has read and approved** the prompt from call 1 — that survey is the
+governance boundary, and it is why the demo is split into two workflows rather than
+one.
+
+What the model actually receives is narrow and mechanical: the output of
+`journalctl -u httpd -n 20`, plus a fixed instruction. It is not given credentials,
+inventory, or access to anything. And its YAML output is never trusted blindly —
+`commit_to_gitea` forces `hosts: all` and `become: true` before committing, so the
+model cannot choose its own blast radius, and the fix lands as a reviewable Git
+commit before anyone runs it.
+
+Everything is plain OpenAI `/v1/chat/completions`, so the inference backend is
+configuration rather than code. You do **not** need an endpoint to start.
+
+## Default AI: what runs when you give no OpenShift AI details
+
+Leave the endpoint prompts blank and the IaC deploys a complete, self-contained
+inference stack for you. Nothing external is required — no OpenShift AI, no RHEL AI,
+no API keys, no GPU, no accounts.
+
+**What gets deployed.** `Ollama` as a Podman Quadlet service on the control node,
+listening on port `11434` and exposing an OpenAI-compatible API. It serves two
+models, both pulled and warmed automatically at deploy time:
+
+| Serves | Model | Size | Variable | Used by |
+|---|---|---|---|---|
+| Calls 1 & 2 — RCA and fix instruction | `granite3.1-dense:2b` | ~1.6 GB | `ollama_model` | `🤖 RHEL AI: Analyze Incident` |
+| Call 3 — playbook generation | `qwen2.5-coder:3b` | ~1.9 GB | `ollama_codegen_model` | `🧠 Lightspeed Remediation Playbook Generator` |
+
+**How the job templates reach it.** They don't hardcode anything. `demo_content`
+writes the endpoint URL, the model ids and a token into an AAP custom credential
+(`Demo AI Endpoint`), which injects them as extra variables at job run time. The
+URL uses the control node's **private** address, so inference traffic never leaves
+the VPC — and the port is opened in firewalld only, never in a security group.
+
+```
+🤖 RHEL AI: Analyze Incident            🧠 Lightspeed Remediation Playbook Generator
+        │                                             │
+        │  POST /v1/chat/completions                  │  POST /v1/chat/completions
+        │  model: granite3.1-dense:2b                 │  model: qwen2.5-coder:3b
+        ▼                                             ▼
+   ┌──────────────────────────────────────────────────────────┐
+   │  Ollama  ·  http://<control-private-ip>:11434/v1         │
+   │  Podman Quadlet on the control node · CPU · private only │
+   └──────────────────────────────────────────────────────────┘
+```
 
 **Why two models rather than one.** Summarising logs into prose and emitting valid
-YAML are different jobs. A 2B general **chat** model writes a perfectly good RCA
-but routinely wraps generated YAML in prose, which surfaces mid-demo as *"the model
-did not return a usable Ansible Playbook"*. A small **code** model is both faster
-on CPU and far more reliable at structured output. The generator is deliberately
-tolerant — it strips markdown fences, drops prose preambles, and wraps a bare task
-list or a lone play into a valid playbook — but no parser can fix output that was
-never YAML.
+YAML are different jobs. A 2B general **chat** model writes a perfectly good RCA but
+routinely wraps generated YAML in prose, which surfaces mid-demo as *"the model did
+not return a usable Ansible Playbook"*. A small **code** model is both faster on CPU
+and far more reliable at structured output. The generator is deliberately tolerant —
+it strips markdown fences, drops prose preambles, and wraps a bare task list or a
+lone play into a valid playbook — but no parser can fix output that was never YAML.
 
-**What to expect.** CPU inference, so 30–90 seconds per call. Narrate while it
-thinks. Both models are kept resident (`OLLAMA_MAX_LOADED_MODELS=2`) and warmed at
-deploy time, so neither step pays a cold start or an eviction reload mid-demo.
-Nothing leaves your VPC: the endpoint is reachable only over the control node's
-private address, and is never published to the internet.
+**What to expect in the room.** CPU inference, so 30–90 seconds per call; narrate
+while it thinks. Both models stay resident (`OLLAMA_MAX_LOADED_MODELS=2`) and are
+warmed at deploy time, so neither step pays a cold start or an eviction reload
+mid-demo.
 
-**Cost:** nothing beyond the control node you are already running. No GPU, no
-external API, no tokens.
+**Cost:** nothing beyond the control node you are already paying for.
 
-**Overriding just the models**, keeping everything local — in
+**Honesty about the story.** In the upstream Red Hat lab this endpoint is RHEL AI
+serving Granite. Ollama is a stand-in with an identical API contract, which is what
+makes the swap a variable change. If you are presenting this, it is fair to say
+"a Granite-family model on an OpenAI-compatible endpoint" — and worth saying that
+in production this would be RHEL AI, OpenShift AI Model Serving, or Red Hat AI
+Inference Server, all of which this same code targets unchanged.
+
+**Changing the local models** while staying fully local — in
 `ansible/group_vars/all.yml`:
 
 ```yaml
 ollama_model: "granite3.1-dense:8b"      # better RCA, slower on CPU
-ollama_codegen_model: "granite-code:8b"  # on-brand code model, slower
+ollama_codegen_model: "granite-code:8b"  # on-brand IBM code model, slower
 ```
 
-Then `./scripts/demo_content.sh --profile <p>` pulls and switches to them.
+Then `./scripts/demo_content.sh --profile <p>` pulls and switches to them. The
+stage verifies the endpoint actually serves whatever you configure before it writes
+the credential, so a typo fails immediately instead of mid-demo.
 
 ### Using your own endpoint instead
 
