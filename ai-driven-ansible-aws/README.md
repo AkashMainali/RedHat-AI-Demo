@@ -68,7 +68,7 @@ ai-driven-ansible-aws/
 │   ├── update-ai-endpoint.yml   # repoint the AI credential (no AAP reinstall)
 │   ├── inventory.ini.tmpl       # rendered at runtime from TF outputs
 │   ├── group_vars/all.yml       # non-secret config; secrets via env lookups
-│   ├── aap/                     # put the AAP 2.6 setup bundle here (gitignored)
+│   ├── AAP/                     # put the AAP 2.6 setup bundle here (gitignored)
 │   └── roles/
 │       ├── common target control_base kafka gitea mattermost aap
 │       ├── ollama               # local CPU inference endpoint
@@ -80,6 +80,7 @@ ai-driven-ansible-aws/
     ├── demo_content.sh          # 3. demo content only (the fast path)
     ├── attach-subscription.sh   # attach an AAP subscription (seconds)
     ├── set-ai-endpoint.sh       # repoint the demo at a real model endpoint
+    ├── install-collections.sh   # install + verify collections on this machine
     ├── cleanup.sh               # unregister + destroy
     ├── preflight.sh             # tool + AAP bundle checks
     ├── collect-secrets.sh       # hidden-input secret prompts (sourced)
@@ -106,10 +107,14 @@ Before you run, have ready:
   covers this. The same credentials are used for RHSM and `registry.redhat.io`.
   Nothing is needed at install time beyond these; attach the subscription in the
   AAP UI on first login (Username/password, not a manifest).
-- **The AAP 2.6 containerized setup bundle** in `ansible/aap/` — download
+- **The AAP 2.6 containerized setup bundle** in `ansible/AAP/` — download
   `ansible-automation-platform-containerized-setup-2.6-*.tar.gz` from
   <https://developers.redhat.com/products/ansible/download>. `bootstrap.sh` also
   extracts `ansible.controller` from it, so no Automation Hub token is required.
+  It must be present on **whichever machine you run these scripts from** — AAP
+  and EDA are configured via API calls delegated to that machine, not to the
+  remote control node. `scripts/preflight.sh` checks for it (matched
+  case-insensitively, so `ansible/aap/` also works).
 - *(Optional)* an **OpenAI-compatible model endpoint** — OpenShift AI Model
   Serving, RHEL AI, or Red Hat MaaS. Leave it blank and the demo deploys a local
   CPU endpoint instead. See [AI inference](#ai-inference).
@@ -123,6 +128,7 @@ Before you run, have ready:
 | **`bootstrap.sh`** | Terraform **+** full `site.yml` (RHSM, services, AAP install, demo content) | **30–50 min** | First build, from nothing |
 | **`infra_only.sh`** | Terraform only — no software, no secrets prompted | **3–5 min** | You want the boxes up before configuring, or to converge drift |
 | **`demo_content.sh`** | Gitea content + AAP/EDA objects only | **2–5 min** | **Iterating on the demo.** Changed a playbook, rulebook, job template or workflow |
+| **`install-collections.sh`** | Installs + verifies every Ansible collection this project needs, on this machine only | **seconds** | Fixing/checking a collection problem without running anything else. `bootstrap.sh` and `demo_content.sh` both call this automatically. |
 
 `demo_content.sh` is the one you'll use most. It runs `site.yml --tags
 demo_content`, which skips the AAP containerized install — the 20–40 minute part
@@ -853,7 +859,7 @@ generated inventory. Add `--delete-ssh-key` to also remove the local keypair.
 ## Troubleshooting
 
 - **AAP install fails** — it is version/entitlement sensitive. Confirm your
-  subscription includes AAP 2.6 and that the setup bundle in `ansible/aap/`
+  subscription includes AAP 2.6 and that the setup bundle in `ansible/AAP/`
   matches. Check `/tmp/aap_install.log` on the control node. You can set
   `aap_install_enabled: false` in `ansible/group_vars/all.yml` to build
   everything else, then install AAP by hand.
@@ -883,9 +889,23 @@ generated inventory. Add `--delete-ssh-key` to also remove the local keypair.
 - **Demo content stage fails elsewhere** — the rescue block prints the failing
   task and message, and tailors its advice to the cause. The stage is safely
   re-runnable and leaves the platform untouched when it fails.
-- **`ansible.controller` not found** — `bootstrap.sh` extracts it from the setup
-  bundle in `ansible/aap/`. Confirm the tarball is there, then re-run. Delete
-  `ansible/.aap-collections/` to force re-extraction.
+- **`ansible.controller` not found** — this collection must be on
+  **whichever machine runs `bootstrap.sh`/`demo_content.sh`**, not the remote
+  control node: AAP and EDA are configured through API calls delegated to that
+  machine (see `ansible/roles/demo_content/tasks/main.yml`). Both scripts call
+  `install_all_collections` right after `preflight.sh`, which installs
+  everything and then verifies it actually resolves — so this should now fail
+  fast, before Terraform runs, rather than deep inside an Ansible task. Fix or
+  re-check in isolation, without doing anything else:
+
+  ```bash
+  ./scripts/install-collections.sh
+  ```
+
+  If it still fails, delete `ansible/.aap-collections/` and re-run — a
+  previous run interrupted mid-extraction can leave a partial collection
+  behind. Confirm the tarball is present in `ansible/AAP/` (matched
+  case-insensitively, so `ansible/aap/` also works).
 - **EDA activation restart-loops on `.../api/v2/config/`** — `ansible-rulebook`
   cannot use the controller API. Two distinct causes, and the log tells you which:
   - `Connection timeout` → wrong *address*. AWS does not route traffic to an

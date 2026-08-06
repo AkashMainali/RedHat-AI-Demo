@@ -36,17 +36,26 @@ fi
 # --- AAP containerized setup bundle -----------------------------------------
 # Also the source of the ansible.controller collection used to configure AAP,
 # so it is required even if you plan to install AAP by hand.
+#
+# Matched CASE-INSENSITIVELY: the bundle directory is tracked in git as
+# ansible/AAP/ (uppercase). A glob for lowercase ansible/aap/ happens to still
+# find it on case-insensitive filesystems (macOS, Windows) but silently finds
+# nothing on most Linux filesystems, which are case-sensitive - so this uses
+# `find -iname` to match either casing everywhere.
 echo
 echo "Checking the AAP setup bundle..."
-if compgen -G "${ROOT_DIR}/ansible/aap/*.tar.gz" >/dev/null 2>&1; then
-  bundle="$(basename "$(compgen -G "${ROOT_DIR}/ansible/aap/*.tar.gz" | head -1)")"
-  printf '  ok    %s\n' "${bundle}"
+aap_dir="$(find "${ROOT_DIR}/ansible" -maxdepth 1 -iname 'aap' -type d -print -quit 2>/dev/null || true)"
+bundle=""
+[[ -n "${aap_dir}" ]] && bundle="$(find "${aap_dir}" -maxdepth 1 -name '*.tar.gz' -print -quit 2>/dev/null || true)"
+
+if [[ -n "${bundle}" ]]; then
+  printf '  ok    %s\n' "$(basename "${bundle}")"
 else
   cat >&2 <<EOF
-  MISS  no *.tar.gz in ansible/aap/
+  MISS  no *.tar.gz in ansible/AAP/ (or ansible/aap/)
 
 Download the Ansible Automation Platform 2.6 CONTAINERIZED setup bundle and put
-it in ansible/aap/:
+it in ansible/AAP/:
   https://developers.redhat.com/products/ansible/download
 
 bootstrap.sh also extracts the ansible.controller collection from this bundle to

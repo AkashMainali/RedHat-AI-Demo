@@ -87,6 +87,14 @@ done
 # --- 1. workstation tooling + AAP bundle -------------------------------------
 bash "${SCRIPT_DIR}/preflight.sh"
 
+# --- 1b. Ansible collections on THIS machine ---------------------------------
+# No AWS/Terraform/SSH dependency, so this runs before any of that: a missing
+# or broken collection fails in seconds here, not 20-40 minutes into a build.
+# Skipped for --skip-ansible, which builds infrastructure only.
+if [[ "${SKIP_ANSIBLE}" -eq 0 ]]; then
+  install_all_collections
+fi
+
 # --- 2. resource naming ------------------------------------------------------
 if [[ -z "${DEMO_USERNAME}" ]]; then
   if [[ "${AAP_DEMO_NONINTERACTIVE:-0}" == "1" ]]; then
@@ -145,12 +153,11 @@ if [[ "${SKIP_ANSIBLE}" -eq 1 ]]; then
   exit 0
 fi
 
-# --- 7. inventory, SSH readiness, collections --------------------------------
+# --- 7. inventory, SSH readiness ---------------------------------------------
+# Collections were already installed and verified in step 1b.
 render_inventory "${SSH_KEY_PATH}"
 wait_for_ssh "${CONTROL_PUBLIC_IP}" "${SSH_USER}" "${SSH_KEY_PATH}"
 wait_for_ssh "${TARGET_PUBLIC_IP}" "${SSH_USER}" "${SSH_KEY_PATH}"
-install_galaxy_collections
-ensure_aap_collections require
 
 # --- 8. configure ------------------------------------------------------------
 run_args=()

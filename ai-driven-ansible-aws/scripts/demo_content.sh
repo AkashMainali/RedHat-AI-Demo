@@ -73,6 +73,11 @@ done
 # --- 1. tooling + the AAP bundle (ansible.controller comes from it) ----------
 bash "${SCRIPT_DIR}/preflight.sh"
 
+# --- 1b. Ansible collections on THIS machine ---------------------------------
+# No AWS dependency, so this runs before AWS auth: a missing or broken
+# collection fails in seconds, before anything else in this script runs.
+install_all_collections
+
 # --- 2. AWS, only to read Terraform outputs ---------------------------------
 aws_authenticate "${AWS_REGION_ARG}" "${AWS_PROFILE_ARG}"
 tf_export_vars "${AWS_REGION}" "${DEMO_USERNAME:-aiops-ansible-demo}"
@@ -119,10 +124,10 @@ case "${_aap_lic}" in
     ;;
 esac
 
-# --- 5. inventory + collections ---------------------------------------------
+# --- 5. inventory + SSH readiness --------------------------------------------
+# Collections were already installed and verified in step 1b.
 render_inventory "${SSH_KEY_PATH}"
 wait_for_ssh "${CONTROL_PUBLIC_IP}" "${SSH_USER}" "${SSH_KEY_PATH}" 12
-ensure_aap_collections require
 
 # --- 6. run the demo_content stage (plus the local AI endpoint) --------------
 # --limit control because every demo_content task either runs on the control node

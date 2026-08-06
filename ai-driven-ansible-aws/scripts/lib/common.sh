@@ -160,30 +160,98 @@ install_galaxy_collections() {
 
 ensure_aap_collections() {
   # ansible.controller (used to configure AAP as code) ships inside the AAP
-  # containerized setup bundle in ansible/aap/, so extract it locally rather than
-  # requiring a Red Hat Automation Hub token.
+  # containerized setup bundle, so extract it locally rather than requiring a
+  # Red Hat Automation Hub token.
   local required="${1:-warn}"   # 'require' to make a missing bundle fatal
-  local tarball
-  tarball="$(find "${ANSIBLE_DIR}/aap" -maxdepth 1 -name '*.tar.gz' -print -quit 2>/dev/null || true)"
 
-  if [[ -z "${tarball}" ]]; then
+  # The bundle directory is matched CASE-INSENSITIVELY (find -iname). It is
+  # tracked in git as ansible/AAP/ (uppercase); a prior version of this script
+  # looked only for lowercase ansible/aap/, which happened to still match on
+  # case-insensitive filesystems (macOS, Windows) but silently finds nothing
+  # on most Linux filesystems, which are case-sensitive. Matching either
+  # casing here removes that gap entirely.
+  local aap_dir tarball
+  aap_dir="$(find "${ANSIBLE_DIR}" -maxdepth 1 -iname 'aap' -type d -print -quit 2>/dev/null || true)"
+  if [[ -n "${aap_dir}" ]]; then
+    tarball="$(find "${aap_dir}" -maxdepth 1 -name '*.tar.gz' -print -quit 2>/dev/null || true)"
+  fi
+
+  if [[ -z "${tarball:-}" ]]; then
     if [[ "${required}" == "require" ]]; then
-      die "No AAP setup bundle in ansible/aap/. It is required: ansible.controller is extracted from it to configure AAP. Download it from https://developers.redhat.com/products/ansible/download"
+      die "No AAP setup bundle found (looked for ansible/AAP/*.tar.gz and ansible/aap/*.tar.gz). ansible.controller is extracted from it to configure AAP. Download it from https://developers.redhat.com/products/ansible/download and place the .tar.gz in ansible/AAP/."
     fi
-    warn "No AAP tarball in ansible/aap/ - AAP configuration will fail."
+    warn "No AAP tarball found under ansible/AAP/ or ansible/aap/ - AAP configuration will fail."
     return 0
   fi
 
-  if [[ ! -d "${AAP_COLLECTIONS_DIR}/ansible_collections/ansible/controller" ]]; then
+  # Completeness, not just existence: checking only "does the directory exist"
+  # let an interrupted or corrupt earlier extraction look like "already done"
+  # forever, on every later run. MANIFEST.json only exists if the collection
+  # actually extracted in full.
+  local manifest="${AAP_COLLECTIONS_DIR}/ansible_collections/ansible/controller/MANIFEST.json"
+  if [[ ! -f "${manifest}" ]]; then
     log "Extracting AAP config collections from $(basename "${tarball}")"
+    rm -rf "${AAP_COLLECTIONS_DIR}"
     mkdir -p "${AAP_COLLECTIONS_DIR}"
     # --strip-components=2 drops the release dir and the 'collections/' level so
-    # the result is a valid ANSIBLE_COLLECTIONS_PATH root.
-    tar -xzf "${tarball}" -C "${AAP_COLLECTIONS_DIR}" --strip-components=2 \
-      --wildcards '*/collections/ansible_collections/*' 2>/dev/null \
-      || warn "Could not extract collections from the AAP bundle."
+    # the result is a valid ANSIBLE_COLLECTIONS_PATH root. --wildcards is
+    # required for GNU tar to treat the pattern as a glob; bsdtar (macOS)
+    # accepts the same flag as a compatibility no-op, so this is portable.
+    local tar_err
+    if ! tar_err="$(tar -xzf "${tarball}" -C "${AAP_COLLECTIONS_DIR}" --strip-components=2 \
+           --wildcards '*/collections/ansible_collections/*' 2>&1)"; then
+      if [[ "${required}" == "require" ]]; then
+        die "Could not extract collections from the AAP bundle: ${tar_err}"
+      fi
+      warn "Could not extract collections from the AAP bundle: ${tar_err}"
+    fi
   fi
   export ANSIBLE_COLLECTIONS_PATH="${AAP_COLLECTIONS_DIR}:${HOME}/.ansible/collections:/usr/share/ansible/collections"
+}
+
+# install_all_collections - the ONE thing to run to make this machine able to
+# configure AAP. Installs every collection this project needs and then
+# VERIFIES each is actually resolvable, rather than trusting exit codes alone.
+#
+# Deliberately has no dependency on AWS, Terraform or SSH: it only touches
+# this machine. Both bootstrap.sh and demo_content.sh call it immediately
+# after preflight.sh, before anything is built, so a missing or broken
+# collection fails in seconds - not 20-40 minutes into a build. It is also a
+# standalone entrypoint: scripts/install-collections.sh.
+#
+# Why this must run on THIS machine and not the remote control node: AAP and
+# EDA are configured entirely through REST API calls delegated to localhost -
+# see the comment at the top of ansible/roles/demo_content/tasks/main.yml -
+# so ansible.controller has to be resolvable wherever ansible-playbook itself
+# runs, which is here.
+install_all_collections() {
+  log "Installing Ansible collections on this machine"
+
+  log "  - Galaxy collections (ansible/requirements.yml)"
+  ansible-galaxy collection install -r "${ANSIBLE_DIR}/requirements.yml" \
+    || die "Could not install collections from requirements.yml. Check network access to galaxy.ansible.com, or install them by hand: ansible-galaxy collection install -r ansible/requirements.yml"
+
+  log "  - ansible.controller (extracted from the AAP setup bundle)"
+  ensure_aap_collections require
+
+  log "Verifying collections are resolvable..."
+  local listing required_c missing=()
+  listing="$(ansible-galaxy collection list 2>/dev/null | awk 'NF==2 && $1 ~ /\./ {print $1}')"
+  for required_c in ansible.controller community.general ansible.posix containers.podman; do
+    if grep -qx "${required_c}" <<<"${listing}"; then
+      printf '  ok    %s\n' "${required_c}"
+    else
+      printf '  MISS  %s\n' "${required_c}"
+      missing+=("${required_c}")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    die "Missing collection(s) after install: ${missing[*]}.
+  ANSIBLE_COLLECTIONS_PATH=${ANSIBLE_COLLECTIONS_PATH:-<unset>}
+  Re-run scripts/install-collections.sh, or check the Prerequisites section of README.md."
+  fi
+  ok "All required collections present."
 }
 
 # --- AI backend -------------------------------------------------------------
