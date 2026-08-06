@@ -49,7 +49,7 @@ Examples:
   $(basename "$0") --list
   $(basename "$0") --pool "Partner"
   $(basename "$0") --profile my-sso-profile --pool "Partner"
-  $(basename "$0") --host https://54.162.23.34 --pool "Partner"
+  $(basename "$0") --host https://203.0.113.10 --pool "Partner"
 EOF
 }
 

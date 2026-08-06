@@ -1,0 +1,341 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1280" width="1800" height="1280" font-family="'Red Hat Text','Helvetica Neue',Arial,sans-serif">
+  <title>AI-Driven Ansible Automation on AWS — Reference Architecture</title>
+  <desc>Event-driven AIOps reference architecture. Filebeat and Kafka detect an Apache failure; Event-Driven Ansible triggers an enrichment workflow that calls a Granite model for root cause analysis; a human approves the generated prompt; a second workflow generates, commits and applies the remediation playbook.</desc>
+
+  <style>
+    .t       { fill:#151515; }
+    .h1      { font-size:31px; font-weight:700; }
+    .h2      { font-size:15px; fill:#4d5258; }
+    .zone    { font-size:13px; font-weight:700; letter-spacing:1.1px; }
+    .node    { font-size:17px; font-weight:700; }
+    .nodesub { font-size:12px; fill:#4d5258; }
+    .comp    { font-size:13.5px; font-weight:700; }
+    .compsub { font-size:11px; fill:#4d5258; }
+    .port    { font-size:11px; fill:#6a6e73; font-weight:600; }
+    .alab    { font-size:11px; fill:#a30000; font-weight:700; }
+    .flowt   { font-size:13px; font-weight:700; fill:#a30000; }
+    .flow    { font-size:12px; fill:#333; }
+    .note    { font-size:11.5px; fill:#4d5258; }
+    .badge   { font-size:12px; font-weight:700; fill:#ffffff; }
+
+    .vpc      { fill:#f7fbff; stroke:#0f6fc5; stroke-width:2; stroke-dasharray:9 5; }
+    .subnet   { fill:#ffffff; stroke:#a3c8e8; stroke-width:1.5; stroke-dasharray:5 4; }
+    .hostbox  { fill:#fafafa; stroke:#6a6e73; stroke-width:2; }
+    .aapbox   { fill:#fff5f5; stroke:#ee0000; stroke-width:1.8; }
+    .svcbox   { fill:#ffffff; stroke:#8a8d90; stroke-width:1.3; }
+    .aibox    { fill:#eef6ff; stroke:#0f6fc5; stroke-width:1.8; }
+    .extbox   { fill:#f4f4f4; stroke:#8a8d90; stroke-width:1.5; }
+    .opbox    { fill:#ffffff; stroke:#151515; stroke-width:2; }
+    .optbox   { fill:#fbf6ff; stroke:#7d4bbd; stroke-width:1.6; stroke-dasharray:6 4; }
+    .humanbox { fill:#fffbe6; stroke:#d99e0b; stroke-width:2; }
+
+    .aFlow { stroke:#ee0000; stroke-width:2.4; fill:none; marker-end:url(#redArrow); }
+    .aMgmt { stroke:#6a6e73; stroke-width:1.6; fill:none; marker-end:url(#greyArrow); stroke-dasharray:6 4; }
+  </style>
+
+  <defs>
+    <marker id="redArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ee0000"/>
+    </marker>
+    <marker id="greyArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6a6e73"/>
+    </marker>
+  </defs>
+
+  <rect width="1800" height="1280" fill="#ffffff"/>
+
+  <!-- TITLE -->
+  <text class="t h1" x="40" y="46">AI-Driven Ansible Automation — Reference Architecture</text>
+  <text class="t h2" x="40" y="70">Event-driven self-healing infrastructure on AWS · Ansible Automation Platform 2.6 · RHEL 10 · Granite on an OpenAI-compatible endpoint</text>
+  <line x1="40" y1="86" x2="1760" y2="86" stroke="#d2d2d2"/>
+
+  <!-- OPERATOR WORKSTATION -->
+  <rect class="opbox" x="34" y="112" rx="8" width="252" height="298"/>
+  <text class="t zone" x="50" y="137">OPERATOR WORKSTATION</text>
+  <text class="t nodesub" x="50" y="156">Outside AWS · control point</text>
+
+  <rect class="svcbox" x="50" y="170" rx="5" width="220" height="52"/>
+  <text class="t comp" x="62" y="190">Terraform</text>
+  <text class="t compsub" x="62" y="207">VPC · SG · KMS · IAM · EC2</text>
+
+  <rect class="svcbox" x="50" y="230" rx="5" width="220" height="52"/>
+  <text class="t comp" x="62" y="250">Ansible (ansible-core)</text>
+  <text class="t compsub" x="62" y="267">site.yml · 9 roles · tags</text>
+
+  <rect class="svcbox" x="50" y="290" rx="5" width="220" height="62"/>
+  <text class="t comp" x="62" y="310">ansible.controller</text>
+  <text class="t compsub" x="62" y="326">AAP + EDA config as code</text>
+  <text class="t compsub" x="62" y="342">from the AAP bundle</text>
+
+  <rect class="svcbox" x="50" y="360" rx="5" width="220" height="36"/>
+  <text class="t compsub" x="62" y="383">Browser → AAP · Gitea · MM</text>
+
+  <!-- VPC -->
+  <rect class="vpc" x="322" y="100" rx="10" width="1058" height="800"/>
+  <text class="t zone" x="340" y="126" fill="#0f6fc5">AWS VPC — DEDICATED</text>
+  <text class="t note" x="340" y="145">Default-deny security groups · ingress scoped to the operator /32, never 0.0.0.0/0 · IMDSv2 enforced · EBS encrypted with a customer-managed KMS key</text>
+
+  <rect class="subnet" x="338" y="158" rx="8" width="1026" height="726"/>
+  <text class="t note" x="352" y="177" font-weight="600">Public subnet</text>
+
+  <!-- CONTROL NODE -->
+  <rect class="hostbox" x="354" y="192" rx="8" width="600" height="672"/>
+  <text class="t node" x="370" y="219">Control node</text>
+  <text class="t nodesub" x="370" y="238">RHEL 10 · m6i.2xlarge · 8 vCPU / 32 GiB · Podman Quadlet</text>
+
+  <!-- AAP -->
+  <rect class="aapbox" x="370" y="252" rx="6" width="568" height="152"/>
+  <text class="t comp" x="384" y="274" fill="#a30000">Ansible Automation Platform 2.6 — containerized</text>
+  <rect class="svcbox" x="384" y="286" rx="4" width="130" height="48"/>
+  <text class="t compsub" x="393" y="304" font-weight="700">Gateway</text>
+  <text class="t port" x="393" y="321">:443 UI / API</text>
+  <rect class="svcbox" x="522" y="286" rx="4" width="130" height="48"/>
+  <text class="t compsub" x="531" y="304" font-weight="700">Controller</text>
+  <text class="t port" x="531" y="321">:8443 jobs</text>
+  <rect class="svcbox" x="660" y="286" rx="4" width="130" height="48"/>
+  <text class="t compsub" x="669" y="304" font-weight="700">EDA</text>
+  <text class="t port" x="669" y="321">:8445 rulebooks</text>
+  <rect class="svcbox" x="798" y="286" rx="4" width="126" height="48"/>
+  <text class="t compsub" x="807" y="304" font-weight="700">Hub</text>
+  <text class="t port" x="807" y="321">:8444</text>
+  <rect class="svcbox" x="384" y="342" rx="4" width="540" height="50"/>
+  <text class="t compsub" x="393" y="360" font-weight="700">Configured as code — 10 job templates · 2 workflows · 6 credentials</text>
+  <text class="t compsub" x="393" y="377">PostgreSQL and Redis run alongside in the containerized topology</text>
+
+  <!-- SERVICES -->
+  <rect class="svcbox" x="370" y="418" rx="6" width="184" height="96"/>
+  <text class="t comp" x="382" y="439">Kafka</text>
+  <text class="t compsub" x="382" y="456">KRaft, single node</text>
+  <text class="t port" x="382" y="474">:9092 — target SG only</text>
+  <text class="t compsub" x="382" y="492">topic: httpd-events</text>
+
+  <rect class="svcbox" x="562" y="418" rx="6" width="184" height="96"/>
+  <text class="t comp" x="574" y="439">Gitea</text>
+  <text class="t compsub" x="574" y="456">Audit trail / SCM</text>
+  <text class="t port" x="574" y="474">:488 — operator /32</text>
+  <text class="t compsub" x="574" y="492">aiops-demo</text>
+  <text class="t compsub" x="574" y="506">lightspeed-playbooks</text>
+
+  <rect class="svcbox" x="754" y="418" rx="6" width="184" height="96"/>
+  <text class="t comp" x="766" y="439">Mattermost</text>
+  <text class="t compsub" x="766" y="456">ITSM stand-in</text>
+  <text class="t port" x="766" y="474">:8065 — operator /32</text>
+  <text class="t compsub" x="766" y="492">#town-square</text>
+  <text class="t compsub" x="766" y="506">incoming webhook</text>
+
+  <!-- AI INFERENCE -->
+  <rect class="aibox" x="370" y="540" rx="6" width="568" height="136"/>
+  <text class="t comp" x="384" y="562" fill="#0b4f8a">AI inference — default, self-contained</text>
+  <text class="t compsub" x="384" y="579">Ollama · OpenAI-compatible /v1 · private address only</text>
+  <text class="t port" x="384" y="596">:11434 — firewalld only, never in a security group</text>
+  <rect class="svcbox" x="384" y="606" rx="4" width="264" height="58"/>
+  <text class="t compsub" x="393" y="624" font-weight="700">granite3.1-dense:2b · ~1.6 GB</text>
+  <text class="t compsub" x="393" y="640">Root cause analysis + fix prompt</text>
+  <text class="t port" x="393" y="656">chat model</text>
+  <rect class="svcbox" x="660" y="606" rx="4" width="264" height="58"/>
+  <text class="t compsub" x="669" y="624" font-weight="700">qwen2.5-coder:3b · ~1.9 GB</text>
+  <text class="t compsub" x="669" y="640">Playbook generation — must emit YAML</text>
+  <text class="t port" x="669" y="656">code model</text>
+
+  <!-- HUMAN CHECKPOINT -->
+  <rect class="humanbox" x="370" y="692" rx="6" width="568" height="76"/>
+  <circle cx="396" cy="730" r="15" fill="#d99e0b" stroke="#ffffff" stroke-width="2.5"/>
+  <text class="badge" x="396" y="735" text-anchor="middle">5</text>
+  <text class="t comp" x="420" y="718" fill="#8a6100">HUMAN-IN-THE-LOOP CHECKPOINT</text>
+  <text class="t compsub" x="420" y="736">Survey on the Remediation Workflow. An operator reads the AI-authored</text>
+  <text class="t compsub" x="420" y="752">prompt and approves or edits it before any playbook is generated.</text>
+
+  <!-- SECRETS -->
+  <rect class="svcbox" x="370" y="784" rx="6" width="568" height="66"/>
+  <text class="t comp" x="384" y="804">Secret handling</text>
+  <text class="t compsub" x="384" y="821">Registry credentials in an Ansible Vault file created on the host.</text>
+  <text class="t compsub" x="384" y="837">AI key, Gitea token and webhook URL live in AAP credentials.</text>
+
+  <!-- TARGET NODE -->
+  <rect class="hostbox" x="974" y="192" rx="8" width="376" height="292"/>
+  <text class="t node" x="990" y="219">Target node</text>
+  <text class="t nodesub" x="990" y="238">RHEL 10 · t3.medium · the managed workload</text>
+
+  <rect class="svcbox" x="990" y="252" rx="6" width="344" height="90"/>
+  <text class="t comp" x="1002" y="273">httpd (Apache)</text>
+  <text class="t compsub" x="1002" y="290">The service that fails and self-heals</text>
+  <text class="t port" x="1002" y="308">:80 — operator /32 + control SG</text>
+  <text class="t compsub" x="1002" y="328">Broken by an invalid directive in httpd.conf</text>
+
+  <rect class="svcbox" x="990" y="352" rx="6" width="344" height="74"/>
+  <text class="t comp" x="1002" y="373">Filebeat</text>
+  <text class="t compsub" x="1002" y="390">Ships /var/log/httpd/*_log to Kafka</text>
+  <text class="t compsub" x="1002" y="406">over the control node's private address</text>
+
+  <rect class="svcbox" x="990" y="436" rx="6" width="344" height="34"/>
+  <text class="t compsub" x="1002" y="458">Managed by AAP over SSH :22 (control SG)</text>
+
+  <!-- OPTIONAL AI BACKENDS -->
+  <rect class="optbox" x="974" y="506" rx="8" width="376" height="358"/>
+  <text class="t zone" x="990" y="530" fill="#5b2d91">OPTIONAL — SWAP THE BACKEND</text>
+  <text class="t note" x="990" y="549">Set AI_MODEL_ENDPOINT and the local</text>
+  <text class="t note" x="990" y="565">endpoint is skipped entirely. Every playbook</text>
+  <text class="t note" x="990" y="581">already speaks /v1/chat/completions, so this</text>
+  <text class="t note" x="990" y="597">is a variable change, not a code change.</text>
+
+  <rect class="svcbox" x="990" y="612" rx="5" width="344" height="48"/>
+  <text class="t comp" x="1002" y="632">Red Hat OpenShift AI</text>
+  <text class="t compsub" x="1002" y="649">Model Serving · Granite on GPU</text>
+
+  <rect class="svcbox" x="990" y="670" rx="5" width="344" height="48"/>
+  <text class="t comp" x="1002" y="690">RHEL AI</text>
+  <text class="t compsub" x="1002" y="707">vLLM · /v1 on :8000 · what the lab uses</text>
+
+  <rect class="svcbox" x="990" y="728" rx="5" width="344" height="48"/>
+  <text class="t comp" x="1002" y="748">Red Hat AI Inference Server</text>
+  <text class="t compsub" x="1002" y="765">vLLM container from registry.redhat.io</text>
+
+  <rect class="svcbox" x="990" y="786" rx="5" width="344" height="62"/>
+  <text class="t comp" x="1002" y="806">Ansible Lightspeed (SaaS)</text>
+  <text class="t compsub" x="1002" y="823">watsonx Code Assistant · needs a seat</text>
+  <text class="t compsub" x="1002" y="839">Replaces step 6 generation only</text>
+
+  <!-- RED HAT SERVICES -->
+  <rect class="extbox" x="1412" y="112" rx="8" width="356" height="286"/>
+  <text class="t zone" x="1428" y="137">RED HAT SERVICES</text>
+  <text class="t nodesub" x="1428" y="156">Egress only · no inbound access</text>
+
+  <rect class="svcbox" x="1428" y="170" rx="5" width="324" height="56"/>
+  <text class="t comp" x="1440" y="190">registry.redhat.io</text>
+  <text class="t compsub" x="1440" y="207">AAP container images · service account</text>
+
+  <rect class="svcbox" x="1428" y="234" rx="5" width="324" height="56"/>
+  <text class="t comp" x="1440" y="254">Subscription Management</text>
+  <text class="t compsub" x="1440" y="271">RHSM registration · pool attached by IaC</text>
+
+  <rect class="svcbox" x="1428" y="298" rx="5" width="324" height="84"/>
+  <text class="t comp" x="1440" y="318">Why the subscription matters</text>
+  <text class="t compsub" x="1440" y="335">Managed hosts consume entitlements. Without</text>
+  <text class="t compsub" x="1440" y="351">one, the controller accepts inventories and</text>
+  <text class="t compsub" x="1440" y="367">groups but rejects POST /hosts/ with 403.</text>
+
+  <!-- DEMO CONTENT ORIGIN -->
+  <rect class="extbox" x="1412" y="416" rx="8" width="356" height="142"/>
+  <text class="t zone" x="1428" y="441">DEMO CONTENT ORIGIN</text>
+  <rect class="svcbox" x="1428" y="454" rx="5" width="324" height="88"/>
+  <text class="t comp" x="1440" y="474">ansible-tmm/aiops-summitlab</text>
+  <text class="t compsub" x="1440" y="491">Public Red Hat Demo Platform lab. Playbooks</text>
+  <text class="t compsub" x="1440" y="507">and the EDA rulebook are versioned in this</text>
+  <text class="t compsub" x="1440" y="523">repo and pushed into Gitea on every run.</text>
+
+  <!-- DESIGN PRINCIPLE -->
+  <rect class="extbox" x="1412" y="576" rx="8" width="356" height="304"/>
+  <text class="t zone" x="1428" y="601">DESIGN PRINCIPLES</text>
+  <text class="t compsub" x="1428" y="624" font-weight="700">AI is advisory, never authoritative</text>
+  <text class="t compsub" x="1428" y="640">Detection is Filebeat, Kafka and EDA.</text>
+  <text class="t compsub" x="1428" y="656">Execution is an ordinary playbook. Both</text>
+  <text class="t compsub" x="1428" y="672">are deterministic.</text>
+
+  <text class="t compsub" x="1428" y="699" font-weight="700">Generated code is never trusted blindly</text>
+  <text class="t compsub" x="1428" y="715">hosts and become are forced before the</text>
+  <text class="t compsub" x="1428" y="731">commit, so the model cannot choose its</text>
+  <text class="t compsub" x="1428" y="747">own blast radius.</text>
+
+  <text class="t compsub" x="1428" y="774" font-weight="700">Git is the audit trail</text>
+  <text class="t compsub" x="1428" y="790">Every AI-authored fix lands as a reviewable</text>
+  <text class="t compsub" x="1428" y="806">commit before anything runs it.</text>
+
+  <text class="t compsub" x="1428" y="833" font-weight="700">Least privilege by default</text>
+  <text class="t compsub" x="1428" y="849">Inference is private-only; no component is</text>
+  <text class="t compsub" x="1428" y="865">exposed beyond the operator's /32.</text>
+
+  <!-- MANAGEMENT ARROWS -->
+  <path class="aMgmt" d="M286,196 C304,196 312,250 336,250"/>
+
+  <path class="aMgmt" d="M286,320 C306,320 320,404 350,404"/>
+
+  <path class="aMgmt" d="M954,214 C1100,150 1280,146 1408,168"/>
+  <text class="t port" x="1158" y="180">image pull · RHSM — egress only</text>
+
+  <!-- DEMO FLOW -->
+  <!-- 1 controller to httpd -->
+  <path class="aFlow" d="M924,300 C946,300 962,286 986,286"/>
+  <circle cx="970" cy="266" r="13" fill="#ee0000" stroke="#ffffff" stroke-width="2.5"/><text class="badge" x="970" y="271" text-anchor="middle">1</text>
+
+  <!-- 2 filebeat to kafka -->
+  <path class="aFlow" d="M996,424 C978,434 968,448 958,462"/>
+  <circle cx="964" cy="494" r="13" fill="#ee0000" stroke="#ffffff" stroke-width="2.5"/><text class="badge" x="964" y="499" text-anchor="middle">2</text>
+
+  <!-- 3 kafka to EDA -->
+  <path class="aFlow" d="M400,418 C376,418 362,410 362,320 C362,314 362,310 368,310"/>
+  <circle cx="414" cy="411" r="13" fill="#ee0000" stroke="#ffffff" stroke-width="2.5"/><text class="badge" x="414" y="416" text-anchor="middle">3</text>
+
+  <!-- 4 controller to AI -->
+  <path class="aFlow" d="M600,516 L600,536"/>
+  <circle cx="600" cy="527" r="13" fill="#ee0000" stroke="#ffffff" stroke-width="2.5"/><text class="badge" x="600" y="532" text-anchor="middle">4</text>
+
+  <!-- 4b AI to mattermost -->
+  <path class="aFlow" d="M846,538 L846,518"/>
+
+  <!-- 6 codegen to gitea -->
+  <path class="aFlow" d="M700,604 C700,560 680,530 666,518"/>
+  <circle cx="700" cy="527" r="13" fill="#ee0000" stroke="#ffffff" stroke-width="2.5"/><text class="badge" x="700" y="532" text-anchor="middle">6</text>
+
+  <!-- 7 controller to target -->
+  <path class="aFlow" d="M924,320 C948,320 962,448 986,452"/>
+  <circle cx="970" cy="394" r="13" fill="#ee0000" stroke="#ffffff" stroke-width="2.5"/><text class="badge" x="970" y="399" text-anchor="middle">7</text>
+
+  <!-- FLOW LEGEND -->
+  <line x1="40" y1="928" x2="1760" y2="928" stroke="#d2d2d2"/>
+  <text class="t zone" x="40" y="954">THE AIOPS LOOP — WHAT HAPPENS, IN ORDER</text>
+
+  <circle cx="54" cy="988" r="13" fill="#ee0000"/><text class="badge" x="54" y="993" text-anchor="middle">1</text>
+  <text class="t flowt" x="78" y="983">Break Apache</text>
+  <text class="t flow" x="78" y="1000">A job template inserts an invalid directive into httpd.conf and restarts the service.</text>
+  <text class="t flow" x="78" y="1016">The restart fails by design — this is the incident.</text>
+
+  <circle cx="54" cy="1048" r="13" fill="#ee0000"/><text class="badge" x="54" y="1053" text-anchor="middle">2</text>
+  <text class="t flowt" x="78" y="1043">Detect</text>
+  <text class="t flow" x="78" y="1060">Filebeat ships the httpd error log to Kafka. No polling and no cron — the platform</text>
+  <text class="t flow" x="78" y="1076">is already watching the topic.</text>
+
+  <circle cx="54" cy="1108" r="13" fill="#ee0000"/><text class="badge" x="54" y="1113" text-anchor="middle">3</text>
+  <text class="t flowt" x="78" y="1103">React</text>
+  <text class="t flow" x="78" y="1120">The EDA rulebook matches the shutdown event and launches the enrichment</text>
+  <text class="t flow" x="78" y="1136">workflow. Unattended from here until step 5.</text>
+
+  <circle cx="54" cy="1168" r="13" fill="#ee0000"/><text class="badge" x="54" y="1173" text-anchor="middle">4</text>
+  <text class="t flowt" x="78" y="1163">Enrich with AI</text>
+  <text class="t flow" x="78" y="1180">Collect journal logs, ask the chat model for a root cause analysis and a one-line</text>
+  <text class="t flow" x="78" y="1196">fix instruction, then post both to Mattermost.</text>
+
+  <circle cx="924" cy="988" r="13" fill="#d99e0b"/><text class="badge" x="924" y="993" text-anchor="middle">5</text>
+  <text class="t flowt" x="948" y="983" fill="#8a6100">Human approves</text>
+  <text class="t flow" x="948" y="1000">The AI-authored prompt is pre-filled in a survey. A person reviews it and decides.</text>
+  <text class="t flow" x="948" y="1016">Nothing is generated until they do.</text>
+
+  <circle cx="924" cy="1048" r="13" fill="#ee0000"/><text class="badge" x="924" y="1053" text-anchor="middle">6</text>
+  <text class="t flowt" x="948" y="1043">Generate and commit</text>
+  <text class="t flow" x="948" y="1060">The code model turns the approved prompt into a playbook. It is sanitised, committed</text>
+  <text class="t flow" x="948" y="1076">to Gitea, then synced back into AAP.</text>
+
+  <circle cx="924" cy="1108" r="13" fill="#ee0000"/><text class="badge" x="924" y="1113" text-anchor="middle">7</text>
+  <text class="t flowt" x="948" y="1103">Apply, scoped</text>
+  <text class="t flow" x="948" y="1120">A job template runs the generated playbook with an explicit limit. Deliberate and</text>
+  <text class="t flow" x="948" y="1136">bounded — the natural place for a change window.</text>
+
+  <circle cx="924" cy="1168" r="13" fill="#3d7317"/><text class="badge" x="924" y="1173" text-anchor="middle">8</text>
+  <text class="t flowt" x="948" y="1163" fill="#1e4f07">Verified</text>
+  <text class="t flow" x="948" y="1180">Apache serves again. Detection, RCA, generated remediation, a Git audit trail and a</text>
+  <text class="t flow" x="948" y="1196">human decision — in roughly ten minutes.</text>
+
+  <!-- KEY -->
+  <line x1="40" y1="1222" x2="1760" y2="1222" stroke="#d2d2d2"/>
+  <line x1="46" y1="1250" x2="96" y2="1250" class="aFlow"/>
+  <text class="t note" x="106" y="1254">Demo event flow</text>
+  <line x1="252" y1="1250" x2="302" y2="1250" class="aMgmt"/>
+  <text class="t note" x="312" y="1254">Provisioning / management (operator-initiated)</text>
+  <rect class="humanbox" x="646" y="1242" width="18" height="16" rx="3"/>
+  <text class="t note" x="672" y="1254">Human decision point</text>
+  <rect class="optbox" x="838" y="1242" width="18" height="16" rx="3"/>
+  <text class="t note" x="864" y="1254">Optional / swappable component</text>
+  <rect class="aapbox" x="1112" y="1242" width="18" height="16" rx="3"/>
+  <text class="t note" x="1138" y="1254">Ansible Automation Platform</text>
+  <rect class="aibox" x="1358" y="1242" width="18" height="16" rx="3"/>
+  <text class="t note" x="1384" y="1254">AI inference</text>
+</svg>

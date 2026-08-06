@@ -8,7 +8,27 @@ The upstream lab is normally delivered pre-built by the Red Hat Demo Platform
 (demo.redhat.com). This project reproduces the environment described in that
 lab as reusable Infrastructure as Code so you can run it in your own account.
 
+> **Did someone hand you this folder?** Start with **[`docs/HANDOFF.md`](docs/HANDOFF.md)**,
+> not this file. There is per-operator state in a copied folder that must be removed
+> before your first run — one command — and skipping it causes confusing failures.
+
+## Documentation map
+
+| File | Read it when |
+|---|---|
+| **[`docs/HANDOFF.md`](docs/HANDOFF.md)** | You just received this folder. Start here. |
+| `README.md` (this file) | Running it: quick start, demo run book, troubleshooting. |
+| [`CLAUDE.md`](CLAUDE.md) | Working *on* it. Invariants, conventions, what is unverified. |
+| [`docs/LESSONS-LEARNED.md`](docs/LESSONS-LEARNED.md) | Something failed — 20 documented failure modes with root causes. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | You want to change a design choice and need to know what it was weighed against. |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | Reviewing the security model. |
+| [`docs/reference-architecture.svg`](docs/reference-architecture.svg) | Presenting to a customer. |
+
 ## Architecture
+
+Reference architecture diagram: [`docs/reference-architecture.svg`](docs/reference-architecture.svg)
+— components, trust boundaries, the numbered AIOps loop, and where the AI backend
+can be swapped. Open it in a browser, or drop it straight into a customer deck.
 
 Two RHEL 10 nodes in a dedicated VPC (public subnet, internet gateway):
 
@@ -50,10 +70,15 @@ using this beyond a personal demo.
 
 ```
 ai-driven-ansible-aws/
-├── README.md
+├── README.md                    # running it (this file)
+├── CLAUDE.md                    # working on it: invariants + conventions
 ├── .gitignore
 ├── docs/
-│   └── SECURITY.md              # secret-handling model + hardening notes
+│   ├── HANDOFF.md               # new owner starts here
+│   ├── LESSONS-LEARNED.md       # every defect hit, with root cause
+│   ├── DECISIONS.md             # why it is built this way
+│   ├── SECURITY.md              # secret-handling model + hardening notes
+│   └── reference-architecture.svg
 ├── terraform/                   # AWS infrastructure (no secrets in state)
 │   ├── versions.tf providers.tf variables.tf main.tf
 │   ├── security_groups.tf iam.tf kms.tf ec2.tf outputs.tf
@@ -75,6 +100,7 @@ ai-driven-ansible-aws/
     ├── demo_content.sh          # 3. demo content only (the fast path)
     ├── attach-subscription.sh   # attach an AAP subscription (seconds)
     ├── set-ai-endpoint.sh       # repoint the demo at a real model endpoint
+    ├── reset-for-new-owner.sh   # strip per-operator state from a copied folder
     ├── cleanup.sh               # unregister + destroy
     ├── preflight.sh             # tool + AAP bundle checks
     ├── collect-secrets.sh       # hidden-input secret prompts (sourced)
