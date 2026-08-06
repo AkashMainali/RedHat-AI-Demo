@@ -29,10 +29,6 @@ ansible/collections/
 ansible/.aap-collections/
 
 # --- AAP setup bundle (multi-MB, download it yourself) ---
-# The directory is ansible/AAP/ (uppercase). The lowercase pattern that used to be
-# here matched nothing on a case-sensitive filesystem, which is how a 3.6 MB bundle
-# ended up committed. Both cases are listed now.
-ansible/AAP/*.tar.gz
 ansible/aap/*.tar.gz
 
 # --- OS ---
