@@ -192,19 +192,45 @@ ensure_aap_collections() {
   if [[ ! -f "${manifest}" ]]; then
     log "Extracting AAP config collections from $(basename "${tarball}")"
     rm -rf "${AAP_COLLECTIONS_DIR}"
-    mkdir -p "${AAP_COLLECTIONS_DIR}"
-    # --strip-components=2 drops the release dir and the 'collections/' level so
-    # the result is a valid ANSIBLE_COLLECTIONS_PATH root. --wildcards is
-    # required for GNU tar to treat the pattern as a glob; bsdtar (macOS)
-    # accepts the same flag as a compatibility no-op, so this is portable.
-    local tar_err
-    if ! tar_err="$(tar -xzf "${tarball}" -C "${AAP_COLLECTIONS_DIR}" --strip-components=2 \
-           --wildcards '*/collections/ansible_collections/*' 2>&1)"; then
+
+    # Deliberately NOT using --wildcards / --strip-components to pull out just
+    # the collections/ subtree. That needs GNU tar's member-pattern matching,
+    # and GNU tar and bsdtar disagree on it in the worst possible way: GNU tar
+    # requires --wildcards to treat a pattern as a glob, while bsdtar (macOS's
+    # default tar, confirmed on 3.5.3) does not recognize --wildcards at all
+    # and aborts with "Option --wildcards is not supported" - extracting
+    # nothing. There is no flag combination both accept.
+    #
+    # So: extract the whole bundle (27 MB uncompressed - trivial) with the
+    # plain `tar -xzf ... -C dir` form both implementations agree on, then
+    # move the one directory that is actually needed. This is slower by a
+    # fraction of a second and works identically everywhere.
+    local work_dir tar_err
+    work_dir="$(mktemp -d "${ANSIBLE_DIR}/.aap-extract.XXXXXX")" || die "Could not create a temp dir under ${ANSIBLE_DIR} for extraction."
+
+    if ! tar_err="$(tar -xzf "${tarball}" -C "${work_dir}" 2>&1)"; then
+      rm -rf "${work_dir}"
       if [[ "${required}" == "require" ]]; then
-        die "Could not extract collections from the AAP bundle: ${tar_err}"
+        die "Could not extract the AAP bundle: ${tar_err}"
       fi
-      warn "Could not extract collections from the AAP bundle: ${tar_err}"
+      warn "Could not extract the AAP bundle: ${tar_err}"
+      return 0
     fi
+
+    local src
+    src="$(find "${work_dir}" -type d -name ansible_collections -print -quit 2>/dev/null || true)"
+    if [[ -z "${src}" ]]; then
+      rm -rf "${work_dir}"
+      if [[ "${required}" == "require" ]]; then
+        die "Extracted the AAP bundle but found no ansible_collections/ directory inside it. The bundle may be a different layout than expected - re-download from https://developers.redhat.com/products/ansible/download."
+      fi
+      warn "Extracted the AAP bundle but found no ansible_collections/ directory inside it."
+      return 0
+    fi
+
+    mkdir -p "${AAP_COLLECTIONS_DIR}"
+    mv "${src}" "${AAP_COLLECTIONS_DIR}/ansible_collections"
+    rm -rf "${work_dir}"
   fi
   export ANSIBLE_COLLECTIONS_PATH="${AAP_COLLECTIONS_DIR}:${HOME}/.ansible/collections:/usr/share/ansible/collections"
 }
