@@ -271,6 +271,14 @@
     - name: Surface actionable AAP install guidance
       ansible.builtin.fail:
         msg: >-
+          {% if 'subscription' in (ansible_failed_task.name | default('') | lower) %}
+          AAP installed successfully, but the SUBSCRIPTION step failed. The
+          message above has the detail and the fix - in short:
+            ./scripts/attach-subscription.sh --pool "Partner"
+            ./scripts/bootstrap.sh --tags subscription,demo_content
+          The platform is up; only the subscription and the demo objects are
+          outstanding, and neither needs the installer to run again.
+          {% else %}
           The AAP 2.6 containerized install failed at
           "{{ ansible_failed_task.name | default('an unknown task') }}".
           {% if 'command not found' in (ansible_failed_result.stderr | default('')) %}
@@ -291,3 +299,4 @@
           This stage is safely re-runnable: fix the cause and re-run, or set
           aap_install_enabled=false in ansible/group_vars/all.yml to build
           everything except AAP.
+          {% endif %}

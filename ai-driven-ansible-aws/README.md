@@ -73,6 +73,7 @@ ai-driven-ansible-aws/
     ├── bootstrap.sh             # 1. everything: infrastructure + full config
     ├── infra_only.sh            # 2. infrastructure only (Terraform)
     ├── demo_content.sh          # 3. demo content only (the fast path)
+    ├── attach-subscription.sh   # attach an AAP subscription (seconds)
     ├── set-ai-endpoint.sh       # repoint the demo at a real model endpoint
     ├── cleanup.sh               # unregister + destroy
     ├── preflight.sh             # tool + AAP bundle checks
@@ -500,6 +501,57 @@ commit before anyone runs it.
 Everything is plain OpenAI `/v1/chat/completions`, so the inference backend is
 configuration rather than code. You do **not** need an endpoint to start.
 
+### How RHEL AI and Ansible Lightspeed relate
+
+A question that comes up in every delivery: **they do not talk to each other.**
+They are two independent services doing two different jobs, and **Ansible is the
+only thing connecting them.**
+
+|  | `🤖 RHEL AI: Analyze Incident` | `🧠 Lightspeed Remediation Playbook Generator` |
+|---|---|---|
+| What it does | *Understands* the failure | *Writes* the automation |
+| Model | Granite, general-purpose | watsonx Code Assistant, Ansible-tuned |
+| Where it runs | Your infrastructure — RHEL AI, OpenShift AI, or the local endpoint | Red Hat SaaS (`c.ai.ansible.redhat.com`) |
+| Entitlement | RHEL AI / OpenShift AI subscription | Lightspeed seat |
+| Input | Raw `journalctl` output | A natural-language instruction |
+| Output | An RCA, plus a one-line fix instruction | YAML |
+
+The handoff between them is an **artifact and a human**, not an API call:
+
+```
+journalctl output
+      │
+      ▼
+🤖 RHEL AI ──► ai_fix_instruction ──► survey field ──►  HUMAN REVIEWS  ──► lightspeed_prompt
+                (set_stats artifact)                    (approve/edit)            │
+                                                                                  ▼
+                                                              🧠 Lightspeed ──► generated_playbook
+```
+
+RHEL AI never calls Lightspeed. It writes a plain-English sentence into an AAP
+workflow artifact; that sentence becomes the default value of a survey field; a
+person reads it and decides; only then does the approved text become the prompt
+Lightspeed receives. AAP is the integration layer, and the survey is a deliberate
+gap in the wiring.
+
+That gap is the demo's argument. Two AI services with no direct trust
+relationship, chained by automation you control, with a human decision point where
+the risk actually is — between *diagnosing* and *changing production*.
+
+**In this build, by default, Lightspeed is not involved at all.** With
+`lightspeed_mode: local` the generation step calls the same model endpoint as the
+analysis step, just with a code model and a code-generation prompt. The narrative
+is unchanged — AI reads the logs, a human approves, AI writes the playbook — but it
+needs no Lightspeed entitlement. The job output records which was used
+(`generated_by`), and `lightspeed_mode: saas` switches to the real service. See
+[Ansible Lightspeed](#ansible-lightspeed).
+
+One naming caveat worth knowing before you present: the job template is called
+`🤖 RHEL AI: Analyze Incident`, but it simply calls an OpenAI-compatible endpoint.
+Whether that endpoint is genuinely RHEL AI, OpenShift AI, or the bundled Ollama is
+your configuration choice — the template name reflects the upstream lab, not a
+hard dependency.
+
 ## Default AI: what runs when you give no OpenShift AI details
 
 Leave the endpoint prompts blank and the IaC deploys a complete, self-contained
@@ -628,6 +680,77 @@ elsewhere, network path is the next thing to sort out.
 
 ### Ansible Lightspeed
 
+**Two different products share this name.** Only one is relevant here, and it is
+*not* the one you configure in the AAP installer inventory.
+
+| | Lightspeed **platform component** | Lightspeed **generation API** |
+|---|---|---|
+| What | Coding assistant + intelligent assistant *inside* AAP | Hosted service that turns a prompt into a playbook |
+| Installed how | AAP containerized installer — `[ansiblelightspeed]` host group and `lightspeed_*` inventory variables | Not installed. It is a SaaS endpoint you call |
+| Where configured | `ansible/roles/aap/templates/aap-inventory.j2` | `ansible/roles/demo_content/...` |
+| Used by this demo | **No** — deliberately not installed | Optionally, for one step |
+
+So you were right: there is no Lightspeed in the installer inventory. That file
+only declares `[automationgateway]`, `[automationcontroller]`, `[automationhub]`,
+`[automationeda]` and `[database]`. The demo does not need the platform component —
+it is a chat sidebar and a VS Code assistant, neither of which appears in the
+workflow — and installing it would add a Postgres database, an nginx listener on
+`:8447`, and its own model-endpoint configuration to an already busy control node.
+
+**Where the demo's Lightspeed configuration actually lives:**
+
+| File | Role |
+|---|---|
+| `roles/demo_content/files/repo/playbooks/generate_remediation_playbook.yml` | **The playbook that calls the API** — `POST {{ lightspeed_api_url }}` with a bearer token |
+| `roles/demo_content/defaults/main.yml` | `lightspeed_mode`, `lightspeed_api_url`, credential name |
+| `roles/demo_content/tasks/aap_credentials.yml` | Creates the `Demo Lightspeed` credential type + credential holding the token |
+| `roles/demo_content/tasks/aap_job_templates.yml` | Attaches that credential to the generator job template |
+| `group_vars/all.yml` | Reads `LIGHTSPEED_API_KEY` from the environment |
+
+It is an outbound API call from a job template, so it needs a credential — not an
+inventory entry.
+
+#### Enabling the platform component (optional, not needed for the demo)
+
+If you want the in-product assistant as a "what's new in 2.6" aside, add to the
+installer inventory in `ansible/roles/aap/templates/aap-inventory.j2`:
+
+```ini
+[ansiblelightspeed]
+<control-node-hostname>
+
+[all:vars]
+lightspeed_admin_password=<password>
+lightspeed_pg_host=localhost
+lightspeed_pg_password=<password>
+lightspeed_chatbot_model_url=<your model /v1 URL>
+lightspeed_chatbot_model_api_key=<key>
+lightspeed_chatbot_model_id=<model id>
+```
+
+Then re-run `./scripts/bootstrap.sh --tags aap`. It needs a model endpoint of its
+own, and the control node is already carrying AAP, Kafka, Gitea, Mattermost and
+Ollama — plan on resizing to `m6i.4xlarge` first. See
+[Red Hat's Lightspeed variables reference](https://docs.redhat.com/en/documentation/red_hat_ansible_automation_platform/2.6/install-ref_lightspeed_variables).
+
+#### Where these values came from
+
+Worth stating, because the two have very different pedigrees:
+
+| Value | Source | Confidence |
+|---|---|---|
+| `lightspeed_mode` | **Invented for this build.** Not a Red Hat concept — it is the switch between the hosted service and the local model endpoint | n/a, ours |
+| `c.ai.ansible.redhat.com` | Red Hat's [Lightspeed documentation](https://docs.redhat.com/en/documentation/red_hat_ansible_lightspeed_with_ibm_watsonx_code_assistant/2.x_latest/html-single/red_hat_ansible_lightspeed_with_ibm_watsonx_code_assistant_user_guide/index) confirms this host | High |
+| `/api/v0/ai/generations/` | Copied from the upstream lab [`ansible-tmm/aiops-summitlab`](https://github.com/ansible-tmm/aiops-summitlab), `playbooks/lightspeed_generate.yml` | **Low — not publicly documented** |
+
+That path appears in the lab repo and nowhere in Red Hat's published API docs, and
+`v0` is not a version string to build on. **Verify with the curl above before a
+customer demo depends on it.** A 404 rather than a 401 means the path moved, not
+that your entitlement is wrong — and the default `local` mode is then the safer
+choice, with the demo narrative unchanged.
+
+#### The generation API
+
 The upstream lab calls the hosted playbook-generation API, which needs a
 Lightspeed / watsonx Code Assistant seat entitlement. This build points that step
 at the same model endpoint instead, so the narrative is identical with no external
@@ -641,9 +764,37 @@ curl -sS -X POST https://c.ai.ansible.redhat.com/api/v0/ai/generations/ \
   -d '{"text":"remove the line containing InvalidDirectiveHere from /etc/httpd/conf/httpd.conf and restart httpd"}'
 ```
 
-A playbook in the response means you are entitled — set `lightspeed_mode: saas` in
-`ansible/roles/demo_content/defaults/main.yml` and supply the token. A 401/403
-means no seat, and the default `local` mode is the right call.
+A playbook in the response means you are entitled. To switch:
+
+```bash
+export LIGHTSPEED_API_KEY="<token>"        # or answer the bootstrap prompt
+# set lightspeed_mode: saas in ansible/roles/demo_content/defaults/main.yml
+./scripts/demo_content.sh --profile my-sso-profile
+```
+
+A 401/403 from that curl means no seat, and the default `local` mode is the right
+call — the demo narrative is identical either way.
+
+**How the token is actually used.** It is not passed as a job-template extra
+variable, where it would be visible in the UI. The IaC creates a
+`Demo Lightspeed` custom credential type holding `lightspeed_api_url` and
+`lightspeed_api_token`, stores the token there encrypted, and attaches the
+credential to `🧠 Lightspeed Remediation Playbook Generator` **only when a token was
+supplied**. At run time AAP injects both as extra variables, and the playbook sends:
+
+```
+POST https://c.ai.ansible.redhat.com/api/v0/ai/generations/
+Authorization: Bearer <token>
+{"text": "<the human-reviewed prompt from the survey>"}
+```
+
+The response's `playbook` field then follows exactly the same path as locally
+generated YAML: sanitised, `hosts`/`become` forced, committed to Gitea, synced,
+executed. Only the generation step differs.
+
+Set `lightspeed_mode: saas` without a token and the run fails early with that
+message, rather than sending an empty bearer token and returning a 401 that looks
+like an expired entitlement.
 
 ### Guaranteed-green live demos
 
@@ -701,14 +852,29 @@ generated inventory. Add `--delete-ssh-key` to also remove the local keypair.
   matches. Check `/tmp/aap_install.log` on the control node. You can set
   `aap_install_enabled: false` in `ansible/group_vars/all.yml` to build
   everything else, then install AAP by hand.
-- **`You don't have permission to POST to .../hosts/ (HTTP 403)`** — this is a
-  **subscription** limit, not RBAC. Hosts consume entitlements, which is why the
-  inventory and group are created successfully and only the host fails.
-  `bootstrap.sh` now attaches the subscription automatically after installing
-  AAP; if that could not find a pool, attach it by hand — open
-  `https://<control-ip>`, choose **Username/password**, enter your Red Hat login
-  — then re-run `./scripts/demo_content.sh`. `demo_content.sh` also checks the
-  subscription up front and stops with this guidance before creating anything.
+- **`AAP has no usable subscription`, or `403` on `POST .../hosts/`** — hosts
+  consume entitlements, so without a subscription the controller accepts
+  inventories and groups but refuses hosts. `demo_content.sh` checks this up
+  front and stops before creating anything.
+
+  **`demo_content.sh` cannot fix it** — it deliberately never asks for your Red
+  Hat credentials. Use the dedicated script:
+
+  ```bash
+  ./scripts/attach-subscription.sh --list             # show your pools
+  ./scripts/attach-subscription.sh --pool "Partner"   # attach that one
+  ./scripts/attach-subscription.sh                    # or pick interactively
+  ```
+
+  It hits the controller API directly — list pools, attach, accept the EULA,
+  verify — in a couple of seconds, and skips the preflight, AWS auth and SSH
+  waits a tagged `bootstrap.sh` run still performs. Then re-run
+  `./scripts/demo_content.sh`.
+
+  `./scripts/bootstrap.sh --tags subscription` does the same thing through
+  Ansible, and a full `bootstrap.sh` attaches automatically after installing AAP.
+  Attaching by hand in the AAP UI (**Username and Password**, your Red Hat login)
+  works too.
 - **Demo content stage fails elsewhere** — the rescue block prints the failing
   task and message, and tailors its advice to the cause. The stage is safely
   re-runnable and leaves the platform untouched when it fails.

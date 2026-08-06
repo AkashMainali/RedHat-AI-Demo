@@ -34,9 +34,31 @@ jt_commit_to_gitea: "🧾 Commit Fix to Gitea"
 jt_build_remediation: "⚙️ Build HTTPD Remediation Template"
 jt_execute_remediation: "🔧✅ Execute HTTPD Remediation"
 
-# Playbook generation path: 'local' reuses the demo's own model endpoint,
-# 'saas' calls the hosted Ansible Lightspeed API (needs a seat entitlement).
+# --- Ansible Lightspeed ------------------------------------------------------
+# PROVENANCE - read before relying on these.
+#
+# lightspeed_mode is NOT a Red Hat concept. It is a switch invented for this
+# build so the playbook-generation step can run either against the hosted
+# Lightspeed service ('saas') or against the demo's own model endpoint
+# ('local'). You will not find it in any Red Hat documentation.
 lightspeed_mode: "local"
+#
+# lightspeed_api_url is copied verbatim from the upstream Red Hat Demo Platform
+# lab, ansible-tmm/aiops-summitlab, playbooks/lightspeed_generate.yml, where it
+# is the Jinja default for input_lightspeed_url.
+#
+# Confidence is mixed and worth stating plainly:
+#   * the HOST (c.ai.ansible.redhat.com) is confirmed in Red Hat's Lightspeed
+#     documentation as the service endpoint;
+#   * the PATH (/api/v0/ai/generations/) is NOT publicly documented. It comes
+#     from that lab repo alone, and "v0" is not a version string to build on.
+#
+# So: verify with a curl before a customer demo depends on it. The README
+# "Ansible Lightspeed" section has the exact command. A 404 rather than a 401
+# means the path moved, not that your entitlement is wrong - in which case the
+# default 'local' mode is the safer choice and the demo narrative is unchanged.
+lightspeed_api_url: "https://c.ai.ansible.redhat.com/api/v0/ai/generations/"
+lightspeed_credential_name: "Demo Lightspeed"
 
 # --- Gitea -----------------------------------------------------------------
 demo_content_repo: "aiops-demo"

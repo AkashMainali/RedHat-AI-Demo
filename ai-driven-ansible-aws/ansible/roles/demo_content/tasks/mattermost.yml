@@ -150,14 +150,48 @@
     (_mm_hooks.json | default([]) | map(attribute='display_name') | list)
   no_log: true
 
+- name: Re-read the webhook list after creating
+  # Authoritative source, queried AFTER the create. The previous version branched
+  # on _mm_hook_new.changed, but ansible.builtin.uri does not reliably report
+  # 'changed' for a POST - it returned 'ok', so the expression fell through to the
+  # list captured BEFORE creation, which on a fresh environment is empty. That is
+  # the "No first item, sequence was empty" failure. Re-querying removes the
+  # dependency on module changed-semantics entirely.
+  ansible.builtin.uri:
+    url: "{{ _mm_api }}/hooks/incoming?team_id={{ _mm_team.json.id }}&per_page=200"
+    method: GET
+    headers: "{{ _mm_headers }}"
+    status_code: 200
+  register: _mm_hooks_after
+  retries: 5
+  delay: 3
+  until: >-
+    mattermost_webhook_display in
+    (_mm_hooks_after.json | default([]) | map(attribute='display_name') | list)
+  failed_when: false
+  no_log: true
+
+- name: Fail clearly if the webhook still does not exist
+  ansible.builtin.fail:
+    msg: >-
+      The Mattermost incoming webhook '{{ mattermost_webhook_display }}' was not
+      found after creating it. Webhooks present:
+      {{ _mm_hooks_after.json | default([]) | map(attribute='display_name') | list }}.
+      Check that incoming webhooks are enabled - the Quadlet unit sets
+      MM_SERVICESETTINGS_ENABLEINCOMINGWEBHOOKS, so a container running with stale
+      configuration is the usual cause:
+      'sudo podman rm -f mattermost' on the control node, then re-run.
+  when: >-
+    mattermost_webhook_display not in
+    (_mm_hooks_after.json | default([]) | map(attribute='display_name') | list)
+
 - name: Resolve the webhook id
   ansible.builtin.set_fact:
     _mm_hook_id: >-
-      {{ _mm_hook_new.json.id
-         if (_mm_hook_new.changed | default(false))
-         else (_mm_hooks.json
-               | selectattr('display_name', 'equalto', mattermost_webhook_display)
-               | map(attribute='id') | first) }}
+      {{ _mm_hooks_after.json
+         | selectattr('display_name', 'equalto', mattermost_webhook_display)
+         | map(attribute='id') | first }}
+  no_log: true
 
 
 - name: Hold the webhook URL for the AAP credential tasks
@@ -184,7 +218,11 @@
             AIOps demo wiring complete. Incident logs and AI root cause analysis
             will appear in this channel when the enrichment workflow runs.
     status_code: 200
-  when: _mm_hook_new.changed | default(false)
+  # Gated on whether the create task RAN, not on 'changed': ansible.builtin.uri
+  # does not set changed for a POST, so a changed-based gate would never fire and
+  # the channel would stay empty. 'skipped' is set when the when-clause was false,
+  # i.e. the webhook already existed.
+  when: not (_mm_hook_new.skipped | default(false))
   no_log: true
 
 - name: Report the Mattermost state

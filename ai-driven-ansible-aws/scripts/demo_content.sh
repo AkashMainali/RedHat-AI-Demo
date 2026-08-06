@@ -92,6 +92,33 @@ source "${SCRIPT_DIR}/collect-secrets.sh"
 collect_secrets_demo_content
 resolve_ai_backend
 
+# --- 4b. subscription: attach it here rather than sending you elsewhere ------
+# The demo content stage cannot create inventory hosts without a subscription -
+# hosts consume entitlements and the controller returns 403. Rather than failing
+# with instructions to run another script, check now and attach it inline. The
+# Red Hat credentials are only requested in this one case, which is why they are
+# not part of this script's normal prompts.
+_aap_lic="$(curl -sSk -u "${AAP_ADMIN_USER:-admin}:${AAP_ADMIN_PASSWORD:-redhat}" \
+  "https://${CONTROL_PUBLIC_IP}/api/controller/v2/config/" 2>/dev/null \
+  | jq -r '.license_info.license_type // "unlicensed"' 2>/dev/null || echo unknown)"
+
+case "${_aap_lic}" in
+  unlicensed|UNLICENSED|null|unknown|"")
+    warn "AAP has no subscription attached (${_aap_lic}); the demo content stage cannot create hosts without one."
+    log  "Attaching one now - this needs your Red Hat login."
+    if AAP_ADMIN_PASSWORD="${AAP_ADMIN_PASSWORD:-redhat}" \
+       AAP_SUBSCRIPTION_POOL="${AAP_SUBSCRIPTION_POOL:-Partner}" \
+       bash "${SCRIPT_DIR}/attach-subscription.sh" --host "https://${CONTROL_PUBLIC_IP}"; then
+      ok "Subscription attached; continuing."
+    else
+      die "Could not attach a subscription, so the demo content stage would fail. See the output above."
+    fi
+    ;;
+  *)
+    log "AAP subscription: ${_aap_lic}"
+    ;;
+esac
+
 # --- 5. inventory + collections ---------------------------------------------
 render_inventory "${SSH_KEY_PATH}"
 wait_for_ssh "${CONTROL_PUBLIC_IP}" "${SSH_USER}" "${SSH_KEY_PATH}" 12

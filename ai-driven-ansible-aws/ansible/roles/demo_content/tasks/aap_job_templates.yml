@@ -95,7 +95,13 @@
   loop:
     - name: "{{ jt_lightspeed_generate }}"
       playbook: playbooks/generate_remediation_playbook.yml
-      credentials: ["{{ ai_credential_name }}"]
+      # The Lightspeed credential is attached only when a token exists. It
+      # injects lightspeed_api_url and lightspeed_api_token, which the playbook
+      # uses when lightspeed_mode is 'saas'.
+      credentials: >-
+        {{ [ai_credential_name] +
+           ([lightspeed_credential_name]
+            if (lightspeed_api_key | default('') | length > 0) else []) }}
       description: "Generates an Ansible Playbook from the human-reviewed prompt."
       extra_vars:
         lightspeed_mode: "{{ lightspeed_mode }}"

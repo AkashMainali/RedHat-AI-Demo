@@ -91,13 +91,31 @@
         msg: "Generating a playbook from: {{ lightspeed_prompt }}"
 
     # -- Path A: the hosted Ansible Lightspeed service --------------------
+    - name: Validate the Lightspeed credential before calling the hosted API
+      # Without this the request goes out as "Authorization: Bearer " and returns
+      # 401, which reads like an expired entitlement rather than a missing
+      # credential. The token is injected by the "Demo Lightspeed" credential,
+      # which the IaC attaches only when LIGHTSPEED_API_KEY was supplied.
+      ansible.builtin.assert:
+        that:
+          - lightspeed_api_token | default('') | length > 0
+          - lightspeed_api_url | default('') | length > 0
+        fail_msg: >-
+          lightspeed_mode is 'saas' but no Lightspeed token is attached to this job
+          template. Attach the "Demo Lightspeed" credential, or export
+          LIGHTSPEED_API_KEY and re-run ./scripts/demo_content.sh. To generate
+          playbooks with the model endpoint instead, set lightspeed_mode back to
+          'local'.
+        quiet: true
+      when: _mode == 'saas'
+
     - name: Request a playbook from Ansible Lightspeed
       ansible.builtin.uri:
-        url: "{{ lightspeed_api_url | default('https://c.ai.ansible.redhat.com/api/v0/ai/generations/') }}"
+        url: "{{ lightspeed_api_url }}"
         method: POST
         headers:
           Content-Type: "application/json"
-          Authorization: "Bearer {{ lightspeed_api_token | default('') }}"
+          Authorization: "Bearer {{ lightspeed_api_token }}"
         body_format: json
         body:
           text: "{{ lightspeed_prompt }}"

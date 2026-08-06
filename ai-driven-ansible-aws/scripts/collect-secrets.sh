@@ -58,9 +58,30 @@ _read_plain() {
 # _skip_if_set <varname> - true when the variable already has a value, so a
 # non-interactive run (CI, or a re-run with exports already in place) never
 # blocks on an optional prompt. Never echoes the value.
+#
+# In non-interactive mode every OPTIONAL prompt is treated as already answered,
+# so the run never blocks waiting on a terminal. Required credentials are still
+# required - they are validated up front instead.
 _skip_if_set() {
   local var="$1"
+  [[ "${AAP_DEMO_NONINTERACTIVE:-0}" == "1" ]] && return 0
   [[ -n "${!var:-}" ]]
+}
+
+# Fails fast, before anything is built, if non-interactive mode is missing a
+# credential it cannot prompt for.
+_require_for_noninteractive() {
+  [[ "${AAP_DEMO_NONINTERACTIVE:-0}" == "1" ]] || return 0
+  local missing=()
+  [[ -n "${RHSM_USERNAME:-}" ]] || missing+=(RHSM_USERNAME)
+  [[ -n "${RHSM_PASSWORD:-}" ]] || missing+=(RHSM_PASSWORD)
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    printf 'ERROR non-interactive mode needs these exported first: %s\n' "${missing[*]}" >&2
+    printf '  export RHSM_USERNAME="you@example.com"\n' >&2
+    printf '  read -rs RHSM_PASSWORD && export RHSM_PASSWORD\n' >&2
+    return 1
+  fi
+  return 0
 }
 
 # --- app passwords: lab defaults, overridable from the environment -----------
@@ -156,9 +177,14 @@ _collect_ai_secrets() {
 # the hosts with RHSM and pull container images from registry.redhat.io.
 # =============================================================================
 collect_secrets() {
+  _require_for_noninteractive || return 1
   printf '\n== Red Hat credentials (registry.redhat.io + RHSM) ==\n' > /dev/tty
   printf '   (Same credentials used for both RHSM and container registry)\n' > /dev/tty
-  _read_plain  "  Red Hat username" RHSM_USERNAME "${RHSM_USERNAME:-}"
+  if _skip_if_set RHSM_USERNAME; then
+    printf '   Using RHSM_USERNAME from the environment: %s\n' "${RHSM_USERNAME}" > /dev/tty
+  else
+    _read_plain "  Red Hat username" RHSM_USERNAME
+  fi
   export RH_REGISTRY_USERNAME="${RHSM_USERNAME}"
   if _skip_if_set RHSM_PASSWORD; then
     printf '   Using RHSM_PASSWORD from the environment.\n' > /dev/tty

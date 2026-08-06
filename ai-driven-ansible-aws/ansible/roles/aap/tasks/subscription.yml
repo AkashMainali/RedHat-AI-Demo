@@ -65,18 +65,110 @@
       become: false
       no_log: true
 
-    - name: Pick the pool with the most managed-node capacity
-      # Several pools can be returned (trials, developer, enterprise). The one
-      # with the largest instance_count is the least likely to run out mid-demo.
+    - name: Normalise the pool list
+      # The endpoint has returned both a bare JSON array and an object wrapping
+      # the array in 'results' across versions. Handle both rather than assuming,
+      # which is what previously produced an empty selection and a silently
+      # skipped attach.
       ansible.builtin.set_fact:
-        aap_pool: >-
-          {{ (aap_pools.json | default([]))
-             | selectattr('instance_count', 'defined')
-             | sort(attribute='instance_count', reverse=true)
-             | list | first | default({}) }}
+        _aap_pool_list: >-
+          {{ aap_pools.json.results
+             if (aap_pools.json is mapping and aap_pools.json.results is defined)
+             else (aap_pools.json if (aap_pools.json is sequence
+                                      and aap_pools.json is not string
+                                      and aap_pools.json is not mapping)
+                   else []) }}
       when: aap_pools.status | default(0) in [200, 202]
 
+    - name: Show the subscription pools on this account
+      # Names and node counts only - no pool ids, which identify your account.
+      # Printed because a silent selection failure is impossible to diagnose.
+      ansible.builtin.debug:
+        msg: >-
+          {{ _aap_pool_list | default([])
+             | map('combine', {})
+             | map(attribute='subscription_name', default='(unnamed)')
+             | zip(_aap_pool_list | default([])
+                   | map(attribute='instance_count', default='?') | list)
+             | map('join', '  —  nodes: ') | list
+             | default(['none returned'], true) }}
+
+    - name: Cast instance_count to an integer before ordering
+      # The API returns it as a string, and sorting strings is lexicographic:
+      # "100" would beat "500", quietly attaching the smaller pool. Casting first
+      # makes "largest" actually mean largest.
+      ansible.builtin.set_fact:
+        _pools_int: >-
+          {{ _pools_int | default([])
+             + [ item | combine({'instance_count': item.instance_count | default(0) | int}) ] }}
+      loop: "{{ _aap_pool_list | default([]) }}"
+      loop_control:
+        label: "{{ item.subscription_name | default('(unnamed)') }}"
+
+    - name: Choose the subscription pool to attach
+      # Prefer an explicitly named pool (aap_subscription_pool_name, substring
+      # match); otherwise take the largest node count.
+      ansible.builtin.set_fact:
+        aap_pool: >-
+          {{ (
+               (_pools_int | default([])
+                | selectattr('subscription_name', 'defined')
+                | selectattr('subscription_name', 'search', aap_subscription_pool_name)
+                | list)
+               if (aap_subscription_pool_name | default('') | length > 0)
+               else (_pools_int | default([])
+                     | selectattr('pool_id', 'defined')
+                     | sort(attribute='instance_count', reverse=true)
+                     | list)
+             ) | first | default({}, true) }}
+      when: _pools_int | default([]) | length > 0
+
+    - name: Report the chosen pool
+      ansible.builtin.debug:
+        msg: >-
+          Attaching "{{ aap_pool.subscription_name | default('unknown') }}"
+          ({{ aap_pool.instance_count | default('?') }} managed nodes)
+          {{ '- matched aap_subscription_pool_name'
+             if (aap_subscription_pool_name | default('') | length > 0)
+             else '- largest pool available' }}
+      when: aap_pool | default({}) | length > 0
+
+    - name: Fail clearly if a named pool was requested but not found
+      ansible.builtin.fail:
+        msg: >-
+          aap_subscription_pool_name is
+          '{{ aap_subscription_pool_name }}' but no pool on this account matches.
+          Available pools are listed above. Correct the name in
+          ansible/group_vars/all.yml, or clear it to take the largest pool.
+      when:
+        - aap_subscription_pool_name | default('') | length > 0
+        - (aap_pool | default({}) | length) == 0
+        - (_aap_pool_list | default([]) | length) > 0
+
+    - name: Work out which field carries the subscription identifier
+      # Not consistently named across AAP releases: pool_id, subscription_id and
+      # id have all appeared. Sending the wrong one posts a null and the endpoint
+      # replies 400 {"error":"No subscription ID provided."}
+      ansible.builtin.set_fact:
+        _aap_pool_id: >-
+          {{ aap_pool.pool_id
+             | default(aap_pool.subscription_id
+                       | default(aap_pool.id | default('', true), true), true) }}
+      when: aap_pool | default({}) | length > 0
+
+    - name: Show the pool's fields if no identifier could be found
+      ansible.builtin.debug:
+        msg: >-
+          Could not find an identifier on the chosen pool. Fields present:
+          {{ aap_pool.keys() | list }}. Attach in the UI, or run
+          ./scripts/attach-subscription.sh --list to inspect the API response.
+      when:
+        - aap_pool | default({}) | length > 0
+        - (_aap_pool_id | default('') | length) == 0
+
     - name: Attach the chosen pool
+      # The identifier is sent under every name the endpoint has used; versions
+      # that read only one ignore the others.
       ansible.builtin.uri:
         url: "https://{{ control_public_ip }}/api/controller/v2/config/attach/"
         method: POST
@@ -85,7 +177,10 @@
         force_basic_auth: true
         body_format: json
         body:
-          pool_id: "{{ aap_pool.pool_id }}"
+          pool_id: "{{ _aap_pool_id }}"
+          subscription_id: "{{ _aap_pool_id }}"
+          id: "{{ _aap_pool_id }}"
+          eula_accepted: true
         validate_certs: false
         status_code: [200, 201, 204]
         timeout: 120
@@ -93,7 +188,35 @@
       failed_when: false
       when:
         - aap_pool | default({}) | length > 0
-        - aap_pool.pool_id is defined
+        - (_aap_pool_id | default('') | length) > 0
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Accept the end user licence agreement
+      # Step 2 of the UI subscription wizard. Whether the attach endpoint alone is
+      # enough varies by version, so this is sent best-effort: harmless if the
+      # attach already recorded acceptance, and it unblocks the cases where the
+      # licence stays inactive until the EULA is acknowledged.
+      ansible.builtin.uri:
+        url: "https://{{ control_public_ip }}/api/controller/v2/config/"
+        method: POST
+        url_username: "{{ aap_admin_user }}"
+        url_password: "{{ aap_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          eula_accepted: true
+          pool_id: "{{ _aap_pool_id }}"
+          subscription_id: "{{ _aap_pool_id }}"
+        validate_certs: false
+        status_code: [200, 201, 400, 403]
+        timeout: 120
+      register: aap_eula
+      failed_when: false
+      when:
+        - aap_pool | default({}) | length > 0
+        - (_aap_pool_id | default('') | length) > 0
       delegate_to: localhost
       become: false
       no_log: true
@@ -121,23 +244,59 @@
           {{ aap_config_after.json.license_info.free_instances | default(0) }}
           managed-node slots free.
 
-    - name: Explain how to attach it by hand if automation could not
+    - name: Stop here if the subscription could not be attached
+      # Deliberately a hard failure, not a warning. This used to warn and let the
+      # build continue - but the demo content stage cannot create inventory hosts
+      # without a subscription, so the run was guaranteed to fail later, after
+      # another 20+ minutes, with the cause buried far behind. Failing here means
+      # one command either completes or stops at the real problem.
+      #
+      # Only fatal when the demo content stage is actually going to run; if you
+      # have set demo_content_enabled=false you presumably know what you are
+      # doing, and AAP itself is usable unlicensed for everything except hosts.
+      ansible.builtin.fail:
+        msg: >-
+          Could not attach an AAP subscription automatically.
+          Pools lookup returned HTTP {{ aap_pools.status | default('no response') }};
+          attach returned {{ aap_attach.status | default('not attempted') }};
+          licence is still
+          {{ aap_config_after.json.license_info.license_type | default('unlicensed') }}.
+          {% if (aap_pools.json | default([]) | length) == 0 %}
+          No pools came back, so either the Red Hat credentials were rejected or
+          the account has no AAP entitlement.
+          {% elif (aap_pool | default({}) | length) == 0 %}
+          Pools were returned but none matched
+          aap_subscription_pool_name='{{ aap_subscription_pool_name }}'.
+          The available pools are listed above - correct the name, or clear it to
+          take the largest.
+          {% endif %}
+
+          Fix it and finish the build in one command - AAP is already installed,
+          so this skips the 20-40 minute install:
+
+            ./scripts/attach-subscription.sh --pool "Partner"
+            ./scripts/bootstrap.sh --tags subscription,demo_content
+
+          Or set demo_content_enabled=false in ansible/group_vars/all.yml to leave
+          the platform running without the demo objects.
+
+          No AAP entitlement on this account? The free Red Hat Developer
+          Subscription for Individuals includes one:
+          https://developers.redhat.com/products/ansible/overview
+      when:
+        - demo_content_enabled | default(true) | bool
+        - >-
+          (aap_config_after.json.license_info.license_type | default('unlicensed'))
+          in ['unlicensed', 'UNLICENSED', '']
+
+    - name: Warn but continue when the demo content stage is disabled
       ansible.builtin.debug:
-        msg:
-          - "WARNING - could not attach an AAP subscription automatically."
-          - "Pools lookup HTTP: {{ aap_pools.status | default('no response') }}"
-          - "Attach HTTP      : {{ aap_attach.status | default('not attempted') }}"
-          - ""
-          - "The demo content stage cannot add inventory hosts without one - the"
-          - "controller returns 403 on POST /hosts/ because hosts consume"
-          - "entitlements. Attach it manually, then re-run scripts/demo_content.sh:"
-          - "  1. Open https://{{ control_public_ip }} and log in as {{ aap_admin_user }}"
-          - "  2. Choose Username/password when prompted for a subscription"
-          - "  3. Enter your Red Hat login; it fetches your pools directly"
-          - ""
-          - "If your account has no AAP entitlement, the free Red Hat Developer"
-          - "Subscription for Individuals includes one:"
-          - "  https://developers.redhat.com/products/ansible/overview"
-      when: >-
-        (aap_config_after.json.license_info.license_type | default('unlicensed'))
-        in ['unlicensed', 'UNLICENSED', '']
+        msg: >-
+          WARNING - no AAP subscription attached, but demo_content_enabled is
+          false so the build continues. AAP will refuse to create inventory hosts
+          until you attach one: ./scripts/attach-subscription.sh
+      when:
+        - not (demo_content_enabled | default(true) | bool)
+        - >-
+          (aap_config_after.json.license_info.license_type | default('unlicensed'))
+          in ['unlicensed', 'UNLICENSED', '']

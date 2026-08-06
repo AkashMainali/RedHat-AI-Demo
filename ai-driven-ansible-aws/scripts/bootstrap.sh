@@ -45,6 +45,10 @@ SAFE & IDEMPOTENT: re-running converges; it never creates duplicate servers.
   --ssh-key PATH        SSH private key to use/create (default: ${SSH_KEY_PATH})
   --skip-ansible        Provision infrastructure only (same as infra_only.sh)
   --skip-terraform      Configure only; requires existing infrastructure
+  -y, --yes             Non-interactive: never prompt. Requires RHSM_USERNAME and
+                        RHSM_PASSWORD exported; everything optional takes its
+                        default (vault password auto-generated, local AI endpoint,
+                        no Lightspeed token).
   --tags TAGS           Run only these site.yml tags. One of:
                           base          RHSM registration and base packages
                           target        httpd + Filebeat on the target node
@@ -73,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --skip-terraform) SKIP_TERRAFORM=1; shift ;;
     --infra-only)     SKIP_TERRAFORM=1; shift ;;   # kept for backwards compat
     --auto-approve)   shift ;;                     # always on; accepted silently
+    -y|--yes)         export AAP_DEMO_NONINTERACTIVE=1; shift ;;
     --tags)           TAGS="$2"; shift 2 ;;
     -h|--help)        usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -84,10 +89,14 @@ bash "${SCRIPT_DIR}/preflight.sh"
 
 # --- 2. resource naming ------------------------------------------------------
 if [[ -z "${DEMO_USERNAME}" ]]; then
-  printf '\n== Resource naming ==\n' >&2
-  printf 'Prefix for all resource names (Enter for "aiops-ansible-demo"): ' >&2
-  IFS= read -r DEMO_USERNAME
-  DEMO_USERNAME="${DEMO_USERNAME:-aiops-ansible-demo}"
+  if [[ "${AAP_DEMO_NONINTERACTIVE:-0}" == "1" ]]; then
+    DEMO_USERNAME="aiops-ansible-demo"
+  else
+    printf '\n== Resource naming ==\n' >&2
+    printf 'Prefix for all resource names (Enter for "aiops-ansible-demo"): ' >&2
+    IFS= read -r DEMO_USERNAME
+    DEMO_USERNAME="${DEMO_USERNAME:-aiops-ansible-demo}"
+  fi
 fi
 log "Resource prefix: ${DEMO_USERNAME}"
 
@@ -105,7 +114,10 @@ export SSH_KEY_PATH
 if [[ "${SKIP_ANSIBLE}" -eq 0 ]]; then
   # shellcheck source=collect-secrets.sh
   source "${SCRIPT_DIR}/collect-secrets.sh"
-  collect_secrets
+  # Explicit check rather than relying on set -e: in non-interactive mode this
+  # returns non-zero when a required credential is missing, and that must stop
+  # the run before Terraform creates anything.
+  collect_secrets || die "Secret collection failed - see above. Nothing has been created."
   log "Secrets collected in memory (the vault file is created on the control node)"
 else
   warn "--skip-ansible: skipping secret collection and configuration."

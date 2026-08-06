@@ -29,6 +29,20 @@ mm_admin_password:    "{{ lookup('ansible.builtin.env', 'MM_ADMIN_PASSWORD')    
 # --- AAP admin -------------------------------------------------------------
 aap_admin_user: admin
 
+# Which subscription pool to attach after installing AAP. A substring match
+# (regex) against the pool's subscription_name.
+#
+# The default "Partner" selects "Red Hat Partner Subscription (500 Nodes)" -
+# confirmed against this account, which also carries five 16-node Developer
+# subscriptions that would otherwise be candidates. Matching by name rather than
+# relying on "largest wins" means the demo does not silently land on a Developer
+# pool if the Partner one is renewed, renamed, or reported differently.
+#
+# Leave empty to take whichever pool has the most managed nodes instead. The full
+# list is printed during the run, so a wrong choice is visible immediately.
+aap_subscription_pool_name: >-
+  {{ lookup('ansible.builtin.env', 'AAP_SUBSCRIPTION_POOL') | default('Partner', true) }}
+
 # TWO addresses for the same API, and using the wrong one fails in a way that is
 # hard to diagnose:
 #

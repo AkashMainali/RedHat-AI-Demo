@@ -121,17 +121,27 @@
           {% set lt = li.license_type | default('unlicensed') %}
           AAP has no usable subscription (license_type: {{ lt }},
           free managed-node slots: {{ li.free_instances | default(0) }}).
+          Nothing has been created - this stage stops here because host creation
+          consumes entitlements and would fail part-way through.
 
-          The controller will accept inventories and groups but reject
-          POST /hosts/ with HTTP 403, because hosts consume entitlements - so
-          this stage would fail part-way through.
+          FIX IT NOW - run this, then re-run demo_content.sh. It takes seconds.
+          (This script cannot do it: it deliberately never asks for your Red Hat
+          credentials, and listing your pools requires them.)
 
-          Attach one, then re-run scripts/demo_content.sh:
-            1. Open https://{{ control_public_ip }} and log in as
-               {{ aap_admin_user }}
-            2. Choose "Username/password" at the subscription prompt
-            3. Enter your Red Hat login - it fetches your pools directly, no
-               manifest export needed
+            ./scripts/attach-subscription.sh --pool "Partner"
+
+          Or see what you have first, and choose interactively:
+
+            ./scripts/attach-subscription.sh --list
+            ./scripts/attach-subscription.sh
+
+          It calls the controller API directly - list pools, attach, accept the
+          EULA, verify - and is idempotent.
+
+          Alternatives: ./scripts/bootstrap.sh --tags subscription does the same
+          through Ansible but re-runs preflight and AWS auth first. Or by hand:
+          open https://{{ control_public_ip }}, log in as {{ aap_admin_user }},
+          choose "Username and Password" and pick your subscription.
 
           No AAP entitlement on your account? The free Red Hat Developer
           Subscription for Individuals includes one:
@@ -212,7 +222,12 @@
           Demo content configuration failed at
           "{{ ansible_failed_task.name | default('an unknown task') }}".
           {% set m = ansible_failed_result.msg | default('') %}
-          {% if '403' in m and '/hosts/' in m %}
+          {% set failed_name = ansible_failed_task.name | default('') %}
+          {% if 'subscription' in failed_name | lower %}
+          The pre-flight subscription check stopped the run before anything was
+          created. The message above has the fix - in short:
+          ./scripts/bootstrap.sh --tags subscription
+          {% elif '403' in m and '/hosts/' in m %}
           The controller refused to create the inventory host. That is a
           SUBSCRIPTION limit, not a permissions problem: hosts consume
           entitlements, which is why the inventory and group above succeeded.
